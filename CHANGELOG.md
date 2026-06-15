@@ -1,5 +1,37 @@
 # Changelog
 
+## [v1.0.28] - 2026-06-15
+
+### English
+- Add Code Island Buddy companion app for iPhone & Apple Watch — Live Activity / Dynamic Island / Lock Screen / StandBy, with opt-in Mac broadcasting (off by default) (#218)
+- Add support for Pi / Oh My Pi sessions with a dedicated mascot (#222)
+- Add support for Google Antigravity (Gemini-based) hooks as a new agent source (#215)
+- Detect Superset terminal sessions (window-level focus; Superset exposes no per-tab focus API) (#213)
+- Surface Codex Desktop plan-mode user-input questions as interactive prompts (#209)
+- Fix Hermes hooks never firing at runtime — install to ~/.hermes/config.yaml (where Hermes actually reads) instead of settings.json (#226)
+- Fix "Always allow" not sticking for MCP tools, which kept re-prompting the same approval (#224)
+- Fix Claude Code shown with the Cursor icon when run inside Cursor's integrated terminal (#220)
+- Fix the approval panel not auto-dismissing after you approve a request in the terminal (#216)
+- Fix the global shortcut silently breaking after switching apps — now uses a Carbon hotkey that needs no Accessibility permission (#217)
+- Fix CPU spiking to 100% after sleep/wake by pausing the idle mascot animation while hidden or asleep (#225)
+- Fix remote SSH reconnection failing (ssh exited 255) by clearing the stale forwarding socket first (#206)
+- Fix Warp tab activation across multiple windows and tabs (#205)
+
+### 中文
+- 新增 Code Island Buddy iPhone / Apple Watch 伴侣 App——Live Activity / 灵动岛 / 锁屏 / 待机显示，Mac 端可选开启镜像广播（默认关闭）(#218)
+- 新增 Pi / Oh My Pi 会话支持，配专属吉祥物 (#222)
+- 新增 Google Antigravity（基于 Gemini）hooks 支持，作为独立 agent 来源 (#215)
+- 识别 Superset 终端会话（窗口级聚焦；Superset 未提供单 tab 聚焦接口）(#213)
+- 把 Codex 桌面版 plan 模式的用户询问渲染成可交互弹窗 (#209)
+- 修复 Hermes hooks 运行时不触发——改为写入 Hermes 真正读取的 ~/.hermes/config.yaml 而非 settings.json (#226)
+- 修复 MCP 工具"始终允许"不生效、同一审批反复弹出 (#224)
+- 修复在 Cursor 集成终端里运行 Claude Code 被错误显示为 Cursor 图标 (#220)
+- 修复在终端里批准后审批面板不自动消失 (#216)
+- 修复全局快捷键切换应用后静默失效——改用免辅助功能权限的 Carbon 热键 (#217)
+- 修复休眠唤醒后 CPU 飙到 100%——隐藏或休眠时暂停空闲吉祥物动画 (#225)
+- 修复 remote SSH 重连失败（ssh exited 255）——连接前先清理残留转发 socket (#206)
+- 修复 Warp 跨多窗口 / 标签页的标签激活 (#205)
+
 ## [v1.0.27] - 2026-05-30
 
 ### English
