@@ -1,7 +1,7 @@
 # CodeIsland — Project Conventions
 
 CodeIsland is a native macOS (Swift / SwiftUI / AppKit) menu-bar + notch app that
-shows the real-time status of local AI coding agents (Codex, Codex, Gemini,
+shows the real-time status of local AI coding agents (Claude Code, Codex, Gemini,
 Cursor, Copilot, Trae, Qoder, Factory, CodeBuddy, OpenCode, Kimi, Cline, Pi, …).
 Agents fire hooks → a tiny native `codeisland-bridge` binary → Unix socket
 (`/tmp/codeisland-<uid>.sock`) → the app updates the notch panel.
@@ -151,11 +151,83 @@ code that reads a `transcript_path` or `*.jsonl` should tail, not slurp.
 
 ---
 
-## Working-tree note (this fork)
+## Fork enhancements over upstream
 
-This checkout is a fork of upstream `wxtsky/CodeIsland`. It carries a substantial
-**uncommitted** feature set ported from "AgentIsland" (code comments label them
-`R1`–`R10`: reserve menu-bar width, configurable hover delay, per-host SSH
-auto-connect/resume, hardened session persistence, glow ring, group-by-machine,
-global dashboard, remote jump to VS Code / Cursor Remote-SSH). **Commit before any
-branch switch or large refactor** — a checkout would lose this work.
+This is a fork of upstream **`wxtsky/CodeIsland`**; our remote is **`Edwiv/CodeIsland`**
+(`origin`, default branch `main`). Everything below is **committed on `main`** and is
+*our* work on top of upstream — the architecture above (reducer, normalization,
+two-module layering) is upstream's and unchanged. Code comments label the first wave
+of these `R1`–`R10` (ported from an earlier "AgentIsland" prototype). When you touch
+any of these, keep the conventions above.
+
+### Island / panel UI
+- **Mascot toggle + live activity** (`R1`). `SettingsKey.showMascot`. When the animated
+  pixel mascot is off, the left wing shows a live readout of what the active agent is
+  doing right now (running tool / "Thinking" / agent name) with a pulsing status dot and
+  the left-to-right shimmer — not a static icon. `MascotActivityLabel` + `ActivityDot` in
+  `NotchPanelView.swift`; minimal per-app glyph chips in `AppIconGlyph.swift`.
+- **Idle-session collapse.** The expanded session list shows only **active** (non-idle)
+  sessions by default and hides idle ones behind a click-to-expand dropdown, in **every**
+  grouping mode (ALL / STA / CLI / MAC). Rendering fewer cards keeps open/close fast with a
+  large session backlog. `SessionListView` → `collapsibleGroupedList` / `groups(for:)` /
+  `renderGroups(_:)` / `InactiveSessionsToggle` in `NotchPanelView.swift`.
+- **Glow ring** (`R6`). Status-driven glow around the island: blue while working, orange
+  (breathing) while awaiting you, green flash on completion. Rendered as a **drop-shadow of
+  the black silhouette** (`.shadow` on the shape) so it hugs the rounded corners and bleeds
+  out smoothly. `GlowStyle.swift` (`IslandGlowBackground` / `IslandGlowPalette`). Tunable:
+  `glowRingEnabled`, `glowWhenCollapsed`, `glowIntensityPct`, and a **separate**
+  `glowRunningIntensityPct` for the blue working glow.
+- **Configurable hover-expand delay** (`R3`). `SettingsKey.hoverExpandDelayMs` (default
+  lowered 500 → 50 ms) to balance anti-mistouch vs responsiveness.
+- **Reserve menu-bar width** (`R2`). `IslandReservationItem.swift` occupies real menu-bar
+  width so neighboring status icons move aside instead of being half-covered.
+- **Per-session detail chips.** Elapsed / model / tool-count / cwd / permission-mode /
+  tokens / context-window chips on each `SessionCard`, each gated by its own `chipShow*`
+  Settings toggle. Also: removed the redundant expanded top-left app logo and the duplicate
+  remote `@host` tag (the green network `TerminalBadge` already shows the host).
+
+### Multi-machine / remote SSH
+- **Per-host SSH auto-connect / auto-resume** (`R4`) parsed from `~/.ssh/config`:
+  `SSHConfigParser.swift`. Faster reconnect backoff `[1, 2, 4, 8, 15, 30]` s, and
+  **discovery/replay of pre-existing remote sessions** on connect. `RemoteInstaller.swift`,
+  `RemoteManager.swift`, `Resources/codeisland-remote-hook.py`.
+- **Hardened session persistence** (`R5`): versioned snapshot, 1000-session cap, ~20 s
+  safety-net rescan, overwrite-never-delete.
+- **Group-by-machine "MAC" tab** (`R7`) + **global aggregation dashboard** (`R8`):
+  `AgentCatalog.machineGroup`, `DashboardView.swift`, `DashboardWindowController.swift`. The
+  dashboard's filter list uses the **real per-app icons** (`AgentAppIcon`), not line glyphs.
+- **Remote jump** (`R10`): open a remote session in VS Code / Cursor Remote-SSH, **focusing
+  the existing editor window** matching the host + folder rather than opening a new one.
+  `RemoteJumpService.swift`.
+- `AgentCatalog.swift`: per-agent brand colors, source normalization, and machine grouping
+  shared across the island, dashboard, and grouping tabs.
+
+### Phone push — Lark / Feishu bot
+- Forwards a desktop permission/question confirmation to the user's phone after a
+  **configurable delay** if still unanswered, with **strict two-way state sync** (whoever
+  answers first — desktop, iPhone Buddy, or phone card — wins; the others are recalled).
+  Self-built Feishu app over a **Python sidecar** (`lark-oapi` WebSocket long connection), so
+  the Swift app needs no Feishu SDK. Pieces: `LarkNotifier.swift` (orchestrator, the third
+  "publisher" alongside `AppleCompanionPublisher` / `ESP32StatePublisher`),
+  `LarkBridgeManager.swift` (long-running child over newline-delimited JSON on stdin/stdout),
+  sidecar `Resources/codeisland-lark-bridge.py`. Settings → **Lark** page (App ID/Secret in
+  UserDefaults, DM/group target, push delay, include-questions). Reuses the existing
+  single-consumption `permissionQueue` / `questionQueue` + `notifyDirty()` — no new state path.
+  Requires `pip3 install lark-oapi` and the Feishu console's **event subscription AND callback
+  channels both set to long-connection (WebSocket)**, subscribing `card.action.trigger`.
+
+### Diagnostics / observability
+- **Context-window & token-usage tracking** per session (`SessionSnapshot`, `JSONLTailer`,
+  `AppState+TranscriptTailer`); surfaced via the context-window / token chips.
+- **Hook-health diagnostics + a diagnostics manifest**: `HookHealthReporter.swift`,
+  `DiagnosticsManifest.swift`, wired into `DiagnosticsExporter.swift`.
+- **Codex app-server** plan-mode / user-input handling: `AppState+CodexAppServer.swift`.
+
+### Build / run (this fork's daily app)
+The locally-used app is built **universal** and deployed to `/Applications`, **ad-hoc signed
+without hardened runtime** (the only config that runs reliably given the iCloud-stored
+`.build` xattrs) — see the `build-run-recipe` memory. `./build.sh` produces the bundle;
+a deploy step copies it to `/Applications`, strips xattrs, re-signs ad-hoc, and relaunches.
+Because the bundle is ad-hoc signed, **Sparkle auto-update may not apply cleanly** — to
+update, `git pull` and re-run the build + deploy rather than letting Sparkle replace it.
+
