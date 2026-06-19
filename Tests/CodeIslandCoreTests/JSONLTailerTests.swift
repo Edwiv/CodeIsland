@@ -39,6 +39,20 @@ final class JSONLTailerTests: XCTestCase {
         XCTAssertEqual(result.delta.lastUserPrompt, "second question")
     }
 
+    func testScanLinesParsesCodexTokenCountEvent() {
+        // Codex stores usage in event_msg → payload.token_count → info, NOT Claude's
+        // message.usage. The byte probe must not skip it, and input_tokens (which already
+        // includes cached) must be split so input + cacheRead == the true prompt size.
+        let line = #"{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":378052},"last_token_usage":{"input_tokens":58331,"cached_input_tokens":22912,"output_tokens":1455},"model_context_window":258400}}}"# + "\n"
+        let result = JSONLTailer.scanLines(Data(line.utf8))
+        XCTAssertEqual(result.delta.inputTokens, 35419)       // 58331 - 22912
+        XCTAssertEqual(result.delta.cacheReadTokens, 22912)
+        XCTAssertEqual(result.delta.cacheCreationTokens, 0)
+        XCTAssertEqual(result.delta.outputTokens, 1455)
+        XCTAssertEqual(result.delta.contextWindow, 258400)
+        XCTAssertFalse(result.delta.isEmpty)
+    }
+
     func testScanLinesTrailingPartialLineReturnsAsFragment() {
         let completeLine = assistantLine(text: "done") + "\n"
         let partial = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"half"

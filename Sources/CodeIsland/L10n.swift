@@ -450,6 +450,8 @@ final class L10n: ObservableObject {
         "scroll_for_more": "Scroll for more",
         "scroll_hidden": "more below",
         "lines": "lines",
+        "idle_sessions_show": "Show %d idle",
+        "idle_sessions_hide": "Hide idle sessions",
     ]
 
     private static let zh: [String: String] = [
@@ -865,6 +867,8 @@ final class L10n: ObservableObject {
         "scroll_for_more": "向下滚动查看更多",
         "scroll_hidden": "个未显示",
         "lines": "行",
+        "idle_sessions_show": "展开 %d 个空闲会话",
+        "idle_sessions_hide": "收起空闲会话",
     ]
 
     private static let ja: [String: String] = [

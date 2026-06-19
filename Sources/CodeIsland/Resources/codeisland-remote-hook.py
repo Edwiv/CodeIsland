@@ -6,7 +6,7 @@ import subprocess
 import sys
 import time
 
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 # Per-user socket path (#193): CodeIsland injects CODEISLAND_SOCKET_PATH via the hook
 # command, but fall back to a uid-scoped path so multiple users on a shared host never
 # collide on a single /tmp/codeisland.sock.
@@ -163,7 +163,6 @@ def _scan_session_jsonl(path):
         return {}
 
     summary = None
-    first_user = None
     last_user = None
     last_assistant = None
     cwd = None
@@ -223,8 +222,6 @@ def _scan_session_jsonl(path):
                 if role == "user":
                     if payload.get("isMeta") is True or _is_noise_user_text(text):
                         continue
-                    if not first_user:
-                        first_user = text
                     last_user = text
                 elif role == "assistant":
                     last_assistant = text
@@ -232,7 +229,11 @@ def _scan_session_jsonl(path):
         return {}
 
     result = {
-        "session_title": _clip(summary or first_user, 120),
+        # Title is the conversation's real summary only — NOT a first-prompt fallback. This
+        # matches local sessions (SessionTitleStore reads only Claude's generated ai/custom
+        # title), so a scanned session shows a "#title" only when one genuinely exists; the
+        # first prompt is shown as the ">" chat row in every card either way.
+        "session_title": _clip(summary, 120),
         "last_user_message": _clip(last_user, 500),
         "last_assistant_message": _clip(last_assistant, 500),
         "cwd": cwd,
@@ -329,6 +330,12 @@ def _discover_and_emit():
     ]
     max_age_seconds = 6 * 60 * 60   # only sessions touched within the last 6h
     max_sessions = 40               # cap the replay so a busy host can't flood the tunnel
+    # A session whose transcript changed within this window is almost certainly mid-turn, so
+    # tag the quiet SessionStart with a live status — otherwise a session that was already
+    # running before we connected shows as idle (its UserPromptSubmit/PreToolUse fired before
+    # connect and aren't replayed). Kept tight to limit a just-finished turn briefly reading as
+    # active; the next real PostToolUse/Stop reconciles it.
+    active_window_seconds = 90
     now = time.time()
 
     found = []  # (mtime, source, path, session_id)
@@ -360,7 +367,7 @@ def _discover_and_emit():
                 found.append((mtime, source, fpath, fname[:-len(".jsonl")]))
 
     found.sort(key=lambda item: item[0], reverse=True)  # most recently active first
-    for _mtime, source, fpath, session_id in found[:max_sessions]:
+    for mtime, source, fpath, session_id in found[:max_sessions]:
         if not session_id:
             continue
         info = _scan_session_jsonl(fpath)
@@ -376,6 +383,11 @@ def _discover_and_emit():
             "_remote_host_name": REMOTE_HOST_NAME,
             "_discovered": True,
         }
+        # Infer live status from transcript freshness so an already-running session shows as
+        # active the moment we connect. The Mac reducer applies this only to brand-new
+        # discovered sessions, never overriding a session it already tracks.
+        if now - mtime <= active_window_seconds:
+            payload["_discovered_status"] = "processing"
         for key in ("session_title", "last_user_message", "last_assistant_message",
                     "model", "input_tokens", "output_tokens",
                     "cache_read_tokens", "cache_write_tokens"):

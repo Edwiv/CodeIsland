@@ -933,6 +933,10 @@ final class AppState {
             return
         }
 
+        // Whether we already tracked this session BEFORE this event. Captured before the
+        // create-if-nil below so the reducer can tell a brand-new (e.g. discovered) session
+        // apart from a live one — it can't infer this itself once we've created a placeholder.
+        let sessionWasTracked = sessions[sessionId] != nil
         if sessions[sessionId] == nil {
             sessions[sessionId] = SessionSnapshot()
         }
@@ -950,7 +954,7 @@ final class AppState {
         // approved in the terminal — resume those (and only those) as approved.
         resolveOrphanPermissionsOnActivity(event)
 
-        let effects = reduceEvent(sessions: &sessions, event: event, maxHistory: maxHistory)
+        let effects = reduceEvent(sessions: &sessions, event: event, maxHistory: maxHistory, alreadyTracked: sessionWasTracked)
 
         // Backfill model after metadata extraction. Hooks are inconsistent across providers,
         // so retry with a cooldown instead of giving up permanently on the first miss.

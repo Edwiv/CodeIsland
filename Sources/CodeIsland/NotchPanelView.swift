@@ -195,18 +195,26 @@ struct NotchPanelView: View {
                 }
             }
             .frame(width: panelWidth)
-            .clipped()
+            // Clip the content to the SAME rounded island shape as the glow — not a rectangle.
+            // A rectangular clip left the content's square corners poking past the rounded
+            // island, which is the "直角/edge" that no glow could hide.
+            .clipShape(NotchPanelShape(
+                topExtension: shouldShowExpanded ? 14 : 3,
+                bottomRadius: shouldShowExpanded ? 16 : 12,
+                minHeight: notchHeight
+            ))
             .background(
                 IslandGlowBackground(
                     shape: NotchPanelShape(
                         topExtension: shouldShowExpanded ? 14 : 3,
-                        bottomRadius: shouldShowExpanded ? 24 : 12,
+                        bottomRadius: shouldShowExpanded ? 16 : 12,
                         minHeight: notchHeight
                     ),
                     status: appState.status,
                     doneNonce: appState.doneFlashNonce,
                     enabled: glowRingEnabled,
                     completing: appState.justCompletedSessionId != nil,
+                    expanded: shouldShowExpanded,
                     intensity: Double(glowIntensityPct) / 100.0,
                     runningIntensity: Double(glowRunningIntensityPct) / 100.0
                 )
@@ -1690,31 +1698,31 @@ private struct SessionListView: View {
     var onlySessionId: String? = nil
     @AppStorage(SettingsKey.sessionGroupingMode) private var groupingMode = SettingsDefaults.sessionGroupingMode
     @AppStorage(SettingsKey.maxVisibleSessions) private var maxVisibleSessions = SettingsDefaults.maxVisibleSessions
+    /// Whether the idle-session dropdown is expanded. Resets to false every time the island
+    /// reopens (the view is recreated on each surface change), so opening always defaults to
+    /// showing just the active sessions.
+    @State private var showInactive = false
 
-    private var groupedSessions: [(header: String, source: String?, ids: [String])] {
-        if let only = onlySessionId, appState.sessions[only] != nil {
-            return [("", nil, [only])]
-        }
-
-        let sorted = appState.sessions.keys.sorted()
-
+    /// Group the given session ids by the current grouping mode. Operates on whatever id set
+    /// it is handed (active or inactive), so the same grouping is reused for both halves.
+    private func groups(for ids: [String]) -> [(header: String, source: String?, ids: [String])] {
         switch groupingMode {
         case "status":
             let l10n = L10n.shared
-            let groups: [(Set<AgentStatus>, String)] = [
+            let statusGroups: [(Set<AgentStatus>, String)] = [
                 ([.running], l10n["status_running"]),
                 ([.waitingApproval, .waitingQuestion], l10n["status_waiting"]),
                 ([.processing], l10n["status_processing"]),
                 ([.idle], l10n["status_idle"]),
             ]
             var result: [(String, String?, [String])] = []
-            for (statuses, label) in groups {
-                let ids = sorted.filter { id in
+            for (statuses, label) in statusGroups {
+                let gids = ids.filter { id in
                     guard let s = appState.sessions[id] else { return false }
                     return statuses.contains(s.status)
                 }
-                if !ids.isEmpty {
-                    result.append(("\(label) (\(ids.count))", nil, ids))
+                if !gids.isEmpty {
+                    result.append(("\(label) (\(gids.count))", nil, gids))
                 }
             }
             return result
@@ -1745,15 +1753,13 @@ private struct SessionListView: View {
             var result: [(String, String?, [String])] = []
             var seen = Set<String>()
             for cli in cliOrder {
-                let ids = sorted.filter { id in
-                    appState.sessions[id]?.source == cli.source
-                }
-                ids.forEach { seen.insert($0) }
-                if !ids.isEmpty {
-                    result.append(("\(cli.name) (\(ids.count))", cli.source, ids))
+                let gids = ids.filter { appState.sessions[$0]?.source == cli.source }
+                gids.forEach { seen.insert($0) }
+                if !gids.isEmpty {
+                    result.append(("\(cli.name) (\(gids.count))", cli.source, gids))
                 }
             }
-            let remaining = sorted.filter { !seen.contains($0) }
+            let remaining = ids.filter { !seen.contains($0) }
             if !remaining.isEmpty {
                 result.append(("\(L10n.shared["other"]) (\(remaining.count))", nil, remaining))
             }
@@ -1763,7 +1769,7 @@ private struct SessionListView: View {
             // Group by machine: local first, then remote hosts sorted by display name (R7).
             var byKey: [String: (label: String, ids: [String])] = [:]
             var order: [String] = []
-            for id in sorted {
+            for id in ids {
                 guard let session = appState.sessions[id] else { continue }
                 let group = AgentCatalog.machineGroup(for: session)
                 if byKey[group.key] == nil {
@@ -1786,48 +1792,116 @@ private struct SessionListView: View {
             }
 
         default: // "all"
-            return [("", nil, sorted)]
+            return ids.isEmpty ? [] : [("", nil, ids)]
+        }
+    }
+
+    /// "Active" = anything not idle (running / processing / waiting for approval or a question).
+    /// These are shown by default; idle sessions are collapsed behind a dropdown.
+    private func isActive(_ id: String) -> Bool {
+        (appState.sessions[id]?.status ?? .idle) != .idle
+    }
+
+    @ViewBuilder
+    private func sessionCards(_ ids: [String]) -> some View {
+        ForEach(ids, id: \.self) { sessionId in
+            if let session = appState.sessions[sessionId] {
+                SessionCard(
+                    appState: appState,
+                    sessionId: sessionId,
+                    session: session,
+                    isCompletion: onlySessionId != nil
+                )
+            }
         }
     }
 
     var body: some View {
-        // Compute once per render — groupedSessions, totalCount, needsScroll
-        let groups = groupedSessions
-        let totalSessionCount = groups.reduce(0) { $0 + $1.ids.count }
-        let needsScroll = onlySessionId == nil && totalSessionCount > maxVisibleSessions
-        let content = VStack(spacing: 6) {
-            ForEach(groups, id: \.header) { group in
-                if !group.header.isEmpty {
-                    HStack(spacing: 6) {
-                        if let src = group.source, let icon = cliIcon(source: src) {
-                            Image(nsImage: icon)
-                                .resizable()
-                                .frame(width: 14, height: 14)
-                        }
-                        Text(group.header)
-                            .font(.system(size: 11, weight: .medium, design: .monospaced))
-                            .foregroundStyle(.white.opacity(0.5))
-                        Spacer()
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.top, 6)
-                    .padding(.bottom, 2)
-                }
+        // The completion card shows just the finished session (with a link to the full list).
+        if let only = onlySessionId, appState.sessions[only] != nil {
+            completionList(only)
+        } else {
+            // Full list: in EVERY grouping mode (ALL / STA / CLI / MAC) we group only the
+            // active (non-idle) sessions and hide idle ones behind a single dropdown — opening
+            // the island defaults to what's actually running; the idle backlog stays collapsed.
+            collapsibleGroupedList
+        }
+    }
 
-                ForEach(group.ids, id: \.self) { sessionId in
-                    if let session = appState.sessions[sessionId] {
-                        SessionCard(
-                            appState: appState,
-                            sessionId: sessionId,
-                            session: session,
-                            isCompletion: onlySessionId != nil
-                        )
-                    }
+    @ViewBuilder
+    private var collapsibleGroupedList: some View {
+        let sorted = appState.sessions.keys.sorted()
+        let activeIds = sorted.filter { isActive($0) }
+        let inactiveIds = sorted.filter { !isActive($0) }
+        let renderedCount = activeIds.count + (showInactive ? inactiveIds.count : 0)
+        let needsScroll = renderedCount > maxVisibleSessions
+
+        let content = VStack(spacing: 6) {
+            renderGroups(groups(for: activeIds))
+
+            // Dropdown toggle whenever idle sessions are hidden — applies to all grouping modes.
+            if !inactiveIds.isEmpty {
+                InactiveSessionsToggle(count: inactiveIds.count, expanded: showInactive) {
+                    withAnimation(NotchAnimation.open) { showInactive.toggle() }
                 }
             }
 
-            // "Show all sessions" — hover with delay to expand
-            if onlySessionId != nil && appState.sessions.count > 1 {
+            if showInactive {
+                renderGroups(groups(for: inactiveIds))
+            }
+        }
+        // Uniform 6pt gap on all sides so the bottom card's corners stay concentric with the
+        // panel's bottom radius (16): inner 10 + gap 6 = outer 16. Matches the 6pt horizontal
+        // inset on each SessionCard.
+        .padding(.vertical, 6)
+
+        if needsScroll {
+            ThinScrollView(maxHeight: CGFloat(maxVisibleSessions) * 90) {
+                content
+            }
+            .clipShape(
+                UnevenRoundedRectangle(
+                    topLeadingRadius: 0, bottomLeadingRadius: 16,
+                    bottomTrailingRadius: 16, topTrailingRadius: 0,
+                    style: .continuous
+                )
+            )
+        } else {
+            content
+        }
+    }
+
+    /// Render grouped sessions: an optional header per group, then its session cards.
+    @ViewBuilder
+    private func renderGroups(_ groups: [(header: String, source: String?, ids: [String])]) -> some View {
+        ForEach(groups, id: \.header) { group in
+            if !group.header.isEmpty {
+                HStack(spacing: 6) {
+                    if let src = group.source, let icon = cliIcon(source: src) {
+                        Image(nsImage: icon)
+                            .resizable()
+                            .frame(width: 14, height: 14)
+                    }
+                    Text(group.header)
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.5))
+                    Spacer()
+                }
+                .padding(.horizontal, 12)
+                .padding(.top, 6)
+                .padding(.bottom, 2)
+            }
+
+            sessionCards(group.ids)
+        }
+    }
+
+    /// Completion card: the finished session plus a link to open the full list.
+    @ViewBuilder
+    private func completionList(_ only: String) -> some View {
+        VStack(spacing: 6) {
+            sessionCards([only])
+            if appState.sessions.count > 1 {
                 SessionsExpandLink(count: appState.sessions.count) {
                     withAnimation(NotchAnimation.open) {
                         appState.surface = .sessionList
@@ -1836,22 +1910,40 @@ private struct SessionListView: View {
                 }
             }
         }
-        .padding(.vertical, 4)
+        // Match collapsibleGroupedList: uniform 6pt gap keeps the card concentric with the
+        // panel's 16pt bottom radius.
+        .padding(.vertical, 6)
+    }
+}
 
-        if needsScroll {
-            ThinScrollView(maxHeight: CGFloat(maxVisibleSessions) * 90) {
-                content
+/// Dropdown row that collapses / reveals the idle ("inactive") sessions in the default list.
+/// Click to toggle (unlike `SessionsExpandLink`, which auto-triggers on hover).
+private struct InactiveSessionsToggle: View {
+    let count: Int
+    let expanded: Bool
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Rectangle().fill(.white.opacity(0.12)).frame(height: 1)
+                Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(.white.opacity(hovering ? 0.6 : 0.4))
+                Text(expanded
+                     ? L10n.shared["idle_sessions_hide"]
+                     : String(format: L10n.shared["idle_sessions_show"], count))
+                    .font(.system(size: 10.5, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.white.opacity(hovering ? 0.7 : 0.45))
+                Rectangle().fill(.white.opacity(0.12)).frame(height: 1)
             }
-            .clipShape(
-                UnevenRoundedRectangle(
-                    topLeadingRadius: 0, bottomLeadingRadius: 20,
-                    bottomTrailingRadius: 20, topTrailingRadius: 0,
-                    style: .continuous
-                )
-            )
-        } else {
-            content
+            .padding(.vertical, 7)
+            .padding(.horizontal, 12)
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .onHover { h in withAnimation(NotchAnimation.micro) { hovering = h } }
     }
 }
 

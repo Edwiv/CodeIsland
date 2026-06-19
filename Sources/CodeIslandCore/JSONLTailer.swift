@@ -12,6 +12,9 @@ public struct ConversationTailDelta: Equatable, Sendable {
     public let outputTokens: Int?
     public let cacheReadTokens: Int?
     public let cacheCreationTokens: Int?
+    // Exact context-window size reported by the agent (Codex's `model_context_window`). Lets the
+    // chip show an accurate % instead of guessing from the model name. nil when not reported.
+    public let contextWindow: Int?
 
     public init(
         sessionId: String,
@@ -20,7 +23,8 @@ public struct ConversationTailDelta: Equatable, Sendable {
         inputTokens: Int? = nil,
         outputTokens: Int? = nil,
         cacheReadTokens: Int? = nil,
-        cacheCreationTokens: Int? = nil
+        cacheCreationTokens: Int? = nil,
+        contextWindow: Int? = nil
     ) {
         self.sessionId = sessionId
         self.lastUserPrompt = lastUserPrompt
@@ -29,6 +33,7 @@ public struct ConversationTailDelta: Equatable, Sendable {
         self.outputTokens = outputTokens
         self.cacheReadTokens = cacheReadTokens
         self.cacheCreationTokens = cacheCreationTokens
+        self.contextWindow = contextWindow
     }
 
     /// A delta only carries signal when at least one field is non-nil.
@@ -36,6 +41,7 @@ public struct ConversationTailDelta: Equatable, Sendable {
         lastUserPrompt == nil && lastAssistantMessage == nil
             && inputTokens == nil && outputTokens == nil
             && cacheReadTokens == nil && cacheCreationTokens == nil
+            && contextWindow == nil
     }
 }
 
@@ -211,7 +217,8 @@ public final class JSONLTailer: @unchecked Sendable {
                 inputTokens: scan.delta.inputTokens,
                 outputTokens: scan.delta.outputTokens,
                 cacheReadTokens: scan.delta.cacheReadTokens,
-                cacheCreationTokens: scan.delta.cacheCreationTokens
+                cacheCreationTokens: scan.delta.cacheCreationTokens,
+                contextWindow: scan.delta.contextWindow
             )
             onDelta(delta)
         }
@@ -248,10 +255,12 @@ public final class JSONLTailer: @unchecked Sendable {
             public var outputTokens: Int?
             public var cacheReadTokens: Int?
             public var cacheCreationTokens: Int?
+            public var contextWindow: Int?
             public var isEmpty: Bool {
                 lastUserPrompt == nil && lastAssistantMessage == nil
                     && inputTokens == nil && outputTokens == nil
                     && cacheReadTokens == nil && cacheCreationTokens == nil
+                    && contextWindow == nil
             }
         }
         public let delta: Delta
@@ -303,6 +312,16 @@ public final class JSONLTailer: @unchecked Sendable {
         let type = json["type"] as? String
         let message = (json["message"] as? [String: Any]) ?? json
 
+        // Codex rollout: token usage lives in an `event_msg` → `payload.token_count` → `info`,
+        // a different shape than Claude's `message.usage`. Parse it so Codex sessions get the
+        // context-window / token chips too (#5 follow-up).
+        if let payload = json["payload"] as? [String: Any],
+           (payload["type"] as? String) == "token_count",
+           let info = payload["info"] as? [String: Any] {
+            applyCodexTokenCount(info, into: &delta)
+            return
+        }
+
         switch type {
         case "user":
             if let text = extractText(from: message["content"]) {
@@ -325,12 +344,32 @@ public final class JSONLTailer: @unchecked Sendable {
         }
     }
 
+    /// Map a Codex `token_count` event's `info` onto the delta. Codex reports the current
+    /// context occupancy as `last_token_usage.input_tokens` — and that value ALREADY includes
+    /// `cached_input_tokens` (unlike Claude, where `input_tokens` excludes cache). Split it back
+    /// out so `contextTokensUsed` (= input + cacheRead + cacheCreation) still equals the true
+    /// prompt size rather than double-counting the cache.
+    private static func applyCodexTokenCount(_ info: [String: Any], into delta: inout ScanResult.Delta) {
+        if let last = info["last_token_usage"] as? [String: Any],
+           let input = last["input_tokens"] as? Int {
+            let cached = last["cached_input_tokens"] as? Int ?? 0
+            delta.inputTokens = max(0, input - cached)
+            delta.cacheReadTokens = cached
+            delta.cacheCreationTokens = 0
+            if let out = last["output_tokens"] as? Int { delta.outputTokens = out }
+        }
+        if let window = info["model_context_window"] as? Int, window > 0 {
+            delta.contextWindow = window
+        }
+    }
+
     /// Types we care about for the panel: `"user"` and `"assistant"`. Anything
     /// else — including unknown types and absent-type lines — can be skipped
     /// without bothering the JSON parser.
     enum QuickTypeKind: Equatable {
         case user
         case assistant
+        case codexTokenCount
         case irrelevant
     }
 
@@ -375,6 +414,10 @@ public final class JSONLTailer: @unchecked Sendable {
                             if hasExactValue(ptr, at: valueStart, total: total, expect: assistantBytes) {
                                 return .assistant
                             }
+                        case 0x74:  // 't' — Codex `"type":"token_count"`
+                            if hasExactValue(ptr, at: valueStart, total: total, expect: tokenCountBytes) {
+                                return .codexTokenCount
+                            }
                         default:
                             break
                         }
@@ -395,6 +438,7 @@ public final class JSONLTailer: @unchecked Sendable {
     private static let typeMarker: [UInt8] = Array(#""type":""#.utf8)
     private static let userBytes: [UInt8] = Array(#"user""#.utf8)
     private static let assistantBytes: [UInt8] = Array(#"assistant""#.utf8)
+    private static let tokenCountBytes: [UInt8] = Array(#"token_count""#.utf8)
 
     private static func hasExactValue(
         _ ptr: UnsafePointer<UInt8>,

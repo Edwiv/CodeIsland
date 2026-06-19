@@ -14,7 +14,7 @@ private struct RemoteCommandResult: Sendable {
 }
 
 enum RemoteInstaller {
-    private static let remoteHookVersion = "0.3.0"
+    private static let remoteHookVersion = "0.4.0"
     private static let remoteOpencodePluginVersion = "v2"
 
     static func installAll(host: RemoteHost, remoteSocketPath: String) async -> RemoteInstallResult {
@@ -559,6 +559,11 @@ def install_claude():
     hooks["UserPromptSubmit"] = without_matcher
     hooks["PermissionRequest"] = with_long_timeout
     hooks["Notification"] = with_matcher
+    # PreToolUse/PostToolUse keep the running status live (mirrors the local install) — without
+    # them a remote session can't show .running mid-turn, and a session discovered mid-task has
+    # no event to flip it off idle until the next tool boundary or Stop.
+    hooks["PreToolUse"] = with_matcher
+    hooks["PostToolUse"] = with_matcher
     hooks["Stop"] = without_matcher
     hooks["SessionStart"] = without_matcher
     hooks["SessionEnd"] = without_matcher
@@ -820,6 +825,11 @@ def install_codebuddy():
     hooks["UserPromptSubmit"] = without_matcher
     hooks["PermissionRequest"] = with_long_timeout
     hooks["Notification"] = with_matcher
+    # PreToolUse/PostToolUse keep the running status live (mirrors the local install) — without
+    # them a remote session can't show .running mid-turn, and a session discovered mid-task has
+    # no event to flip it off idle until the next tool boundary or Stop.
+    hooks["PreToolUse"] = with_matcher
+    hooks["PostToolUse"] = with_matcher
     hooks["Stop"] = without_matcher
     hooks["SessionStart"] = without_matcher
     hooks["SessionEnd"] = without_matcher

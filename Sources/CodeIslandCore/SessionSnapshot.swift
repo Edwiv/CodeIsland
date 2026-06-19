@@ -378,7 +378,36 @@ public struct SessionSnapshot: Sendable {
         if model.contains("gpt-5") || model.contains("gpt-4.1") { return 1_000_000 }
         if model.contains("gpt-4o") || model.contains("o1") || model.contains("o3") || model.contains("codex") { return 128_000 }
         if model.contains("gemini") { return 1_000_000 }
-        return nil
+        // Fallback: some preview / internal model slugs embed the window, e.g. "orange_o48[1m]"
+        // or "x-256k". Parse it so those models also show a % instead of a raw token count.
+        return embeddedWindowHint(in: model)
+    }
+
+    /// Parse a context-window hint embedded in a model slug: "…[1m]" → 1_000_000, "…-256k" →
+    /// 256_000. Returns the largest plausible (8k–10M) "<number><k|m>" run whose unit isn't
+    /// followed by another alphanumeric — so "gpt-4o", "o3", and date suffixes never false-match.
+    /// `model` is expected lowercased. nil when no hint is present.
+    static func embeddedWindowHint(in model: String) -> Int? {
+        let chars = Array(model)
+        var best: Int?
+        var i = 0
+        while i < chars.count {
+            guard chars[i].isNumber else { i += 1; continue }
+            var j = i
+            while j < chars.count, chars[j].isNumber || chars[j] == "." { j += 1 }
+            if j < chars.count, chars[j] == "k" || chars[j] == "m" {
+                let after = j + 1
+                let boundaryOK = after >= chars.count || !(chars[after].isLetter || chars[after].isNumber)
+                if boundaryOK, let num = Double(String(chars[i..<j])) {
+                    let value = Int(num * (chars[j] == "m" ? 1_000_000 : 1_000))
+                    if value >= 8_000 && value <= 10_000_000 {
+                        best = max(best ?? 0, value)
+                    }
+                }
+            }
+            i = max(j, i + 1)
+        }
+        return best
     }
 
     /// Compact token formatter: 950 → "950", 12_300 → "12.3k", 1_200_000 → "1.2M".
@@ -652,16 +681,29 @@ public enum SideEffect: Equatable {
 // MARK: - Pure Reducer
 
 /// Pure reducer: mutates sessions, returns side effects for the caller to execute.
+///
+/// `alreadyTracked` lets the caller report whether this session existed *before* the event —
+/// the app layer (`AppState.handleEvent`) creates a placeholder snapshot before calling in, so
+/// the reducer can't tell a brand-new session from a tracked one by `sessions[sessionId] != nil`
+/// alone. Pass it from the caller's pre-creation check; omit it (direct/test calls) to fall back
+/// to the local check. This distinction is what lets a discovery replay populate a NEW remote
+/// session while still refusing to reset a live one (#3).
 public func reduceEvent(
     sessions: inout [String: SessionSnapshot],
     event: HookEvent,
-    maxHistory: Int
+    maxHistory: Int,
+    alreadyTracked: Bool? = nil
 ) -> [SideEffect] {
     let sessionId = event.sessionId ?? "default"
     let eventName = EventNormalizer.normalize(event.eventName)
     var effects: [SideEffect] = []
 
-    // Ensure session exists
+    // Whether we were ALREADY tracking this session before the event. A discovery replay must
+    // not reset a live session, but a brand-new discovered session still needs the SessionStart
+    // body to run so the scanned last exchange attaches (#3). Prefer the caller's pre-creation
+    // check — `sessions[sessionId] != nil` here is unreliable because the app layer creates a
+    // placeholder before calling in (and the create-if-nil below would defeat it anyway).
+    let sessionExisted = alreadyTracked ?? (sessions[sessionId] != nil)
     if sessions[sessionId] == nil {
         sessions[sessionId] = SessionSnapshot()
     }
@@ -851,10 +893,32 @@ public func reduceEvent(
         }
         effects.append(.enqueueCompletion(sessionId: sessionId))
     case "SessionStart":
-        // Discovery replay must not reset a session we already track (it would wipe live state).
-        if isDiscovered, sessions[sessionId] != nil { break }
-        effects.append(.stopMonitor(sessionId: sessionId))
-        sessions[sessionId] = SessionSnapshot(startTime: Date())
+        // A discovery replay for a session we ALREADY track must not reset it (it would wipe
+        // live state). A replay for a NEW session must still run the body below so the scanned
+        // last exchange / title attaches as chat rows — so guard on whether we tracked it BEFORE
+        // this event, not on `sessions[sessionId] != nil` (always true after the create-if-nil
+        // above, which is why every discovered session used to end up with no conversation rows).
+        if isDiscovered && sessionExisted { break }
+        if !isDiscovered {
+            // Real SessionStart begins a fresh session. Discovered-new sessions skip this reset
+            // so the model / token usage / cwd / title that extractMetadata just applied from
+            // the scan survive — the reset would wipe them and the re-apply below, which only
+            // covers some fields, does not restore token usage.
+            effects.append(.stopMonitor(sessionId: sessionId))
+            sessions[sessionId] = SessionSnapshot(startTime: Date())
+        }
+        // A discovery replay can carry an inferred live status so a session that was already
+        // mid-task before we connected shows as active immediately — it has no UserPromptSubmit/
+        // PreToolUse to replay. Only for a brand-new discovered session (!sessionExisted); never
+        // override a session we already track. The next real PostToolUse/Stop reconciles it.
+        if isDiscovered, !sessionExisted,
+           let hint = event.rawJSON["_discovered_status"] as? String {
+            switch hint {
+            case "running":    sessions[sessionId]?.status = .running
+            case "processing": sessions[sessionId]?.status = .processing
+            default:           break
+            }
+        }
         // Re-apply metadata from this event (common extraction above wrote to the old session)
         if let cwd = event.rawJSON["cwd"] as? String, !cwd.isEmpty { sessions[sessionId]?.cwd = cwd }
         if let model = event.rawJSON["model"] as? String, !model.isEmpty { sessions[sessionId]?.model = model }
