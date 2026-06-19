@@ -733,7 +733,7 @@ final class AppState {
         }
     }
 
-    private func enqueueCompletion(_ sessionId: String) {
+    func enqueueCompletion(_ sessionId: String) {
         // Behavior setting (#146): respect "Auto-expand on agent completion".
         // When disabled the panel stays compact — status indicators still
         // update, but no completion card pops down.

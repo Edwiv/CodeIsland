@@ -5,6 +5,12 @@ import CodeIslandCore
 /// One-click diagnostics export for bug reports.
 /// Collects app metadata, settings, session state, CLI configs, and recent logs into a zip.
 struct DiagnosticsExporter {
+    struct TranscriptIndexEntry: Codable, Equatable {
+        let source: String
+        let path: String
+        let bytes: Int64
+        let modifiedAt: String
+    }
 
     static func export() {
         let panel = NSSavePanel()
@@ -50,41 +56,41 @@ struct DiagnosticsExporter {
         let hookEventsJSON = DispatchQueue.main.sync { recentHookEvents() }
         writeJSON(hookEventsJSON, to: root.appendingPathComponent("state/hook-events.json"))
 
-        // 3. CLI config files
-        let home = fm.homeDirectoryForCurrentUser.path
-        let configs: [(source: String, dest: String)] = [
-            ("\(home)/.claude/settings.json", "configs/claude-settings.json"),
-            ("\(home)/.codex/hooks.json", "configs/codex-hooks.json"),
-            ("\(home)/.gemini/settings.json", "configs/gemini-settings.json"),
-            ("\(home)/.cursor/hooks.json", "configs/cursor-hooks.json"),
-            ("\(home)/.qoder/settings.json", "configs/qoder-settings.json"),
-            ("\(home)/.factory/settings.json", "configs/factory-settings.json"),
-            ("\(home)/.codebuddy/settings.json", "configs/codebuddy-settings.json"),
-            ("\(home)/.codeisland/sessions.json", "configs/persisted-sessions.json"),
-        ]
-        for item in configs {
-            copyIfExists(from: item.source, to: root.appendingPathComponent(item.dest))
-        }
+        // 2c. Hook installation health. This makes "no sessions showing up"
+        // reports diagnosable without asking users to manually inspect each
+        // agent's config file.
+        writeEncodable(HookHealthReporter.snapshot(), to: root.appendingPathComponent("state/hook-health.json"))
+
+        // 3. CLI config files and local hook script
+        copyCLIConfigs(to: root)
+        copyLocalHookFiles(to: root)
 
         // 4. Socket status
         let socketPath = SocketPath.path
         let socketExists = fm.fileExists(atPath: socketPath)
         let socketInfo = "path: \(socketPath)\nexists: \(socketExists)\n"
-        try? socketInfo.write(to: root.appendingPathComponent("state/socket.txt"), atomically: true, encoding: .utf8)
+        writeText(socketInfo, to: root.appendingPathComponent("state/socket.txt"))
+
+        // 4b. Transcript index only: useful for follow-up debugging, but it
+        // intentionally avoids copying transcript contents into diagnostics.
+        writeEncodable(transcriptIndex(), to: root.appendingPathComponent("state/transcript-index.json"))
 
         // 5. Unified system logs (last 2 hours)
         let logOutput = runCommand("/usr/bin/log", args: [
             "show", "--style", "compact", "--info", "--debug",
             "--last", "2h", "--predicate", "subsystem == \"com.codeisland\""
         ])
-        try? logOutput.write(to: root.appendingPathComponent("logs/unified.log"), atomically: true, encoding: .utf8)
+        writeText(logOutput, to: root.appendingPathComponent("logs/unified.log"))
 
         // 6. sw_vers
         let swVers = runCommand("/usr/bin/sw_vers", args: [])
-        try? swVers.write(to: root.appendingPathComponent("logs/sw_vers.txt"), atomically: true, encoding: .utf8)
+        writeText(swVers, to: root.appendingPathComponent("logs/sw_vers.txt"))
 
         // 7. Recent crash reports
         copyCrashReports(to: root.appendingPathComponent("logs/crash-reports", isDirectory: true))
+
+        // 8. Archive manifest
+        DiagnosticsManifest.write(root: root)
 
         // Zip
         if fm.fileExists(atPath: destination.path) {
@@ -179,11 +185,150 @@ struct DiagnosticsExporter {
         }
     }
 
+    private static func writeEncodable<T: Encodable>(_ value: T, to url: URL) {
+        let fm = FileManager.default
+        try? fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        if let data = try? encoder.encode(value) {
+            try? data.write(to: url, options: .atomic)
+        }
+    }
+
+    private static func writeText(_ text: String, to url: URL) {
+        let fm = FileManager.default
+        try? fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? text.write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    private static func copyCLIConfigs(to root: URL) {
+        let fm = FileManager.default
+        var copied = Set<String>()
+        for cli in ConfigInstaller.allCLIs {
+            copyConfigIfExists(
+                from: cli.fullPath,
+                destName: "\(safeFilename(cli.source))-\(safeFilename((cli.fullPath as NSString).lastPathComponent))",
+                root: root,
+                copied: &copied
+            )
+        }
+
+        let home = fm.homeDirectoryForCurrentUser.path
+        let extraConfigs: [(String, String)] = [
+            ("\(ConfigInstaller.codexHome())/config.toml", "codex-config.toml"),
+            ("\(home)/.config/opencode/opencode.jsonc", "opencode-opencode.jsonc"),
+            ("\(home)/.config/opencode/opencode.json", "opencode-opencode.json"),
+            ("\(home)/.config/opencode/config.json", "opencode-config.json"),
+            ("\(home)/.codeisland/sessions.json", "codeisland-sessions.json"),
+        ]
+        for (path, destName) in extraConfigs {
+            copyConfigIfExists(from: path, destName: destName, root: root, copied: &copied)
+        }
+    }
+
+    private static func copyLocalHookFiles(to root: URL) {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let files: [(String, String)] = [
+            ("\(home)/.codeisland/codeisland-hook.sh", "hooks/codeisland-hook.sh"),
+            ("\(home)/.codeisland/codeisland-remote-hook.py", "hooks/codeisland-remote-hook.py"),
+            ("\(home)/.codeisland/codeisland-opencode-remote.js", "hooks/codeisland-opencode-remote.js"),
+        ]
+        for (path, dest) in files {
+            copyIfExists(from: path, to: root.appendingPathComponent(dest))
+        }
+    }
+
+    private static func copyConfigIfExists(
+        from path: String,
+        destName: String,
+        root: URL,
+        copied: inout Set<String>
+    ) {
+        let standardized = URL(fileURLWithPath: path).standardizedFileURL.path
+        guard !copied.contains(standardized) else { return }
+        copied.insert(standardized)
+        copyIfExists(from: path, to: root.appendingPathComponent("configs/\(destName)"))
+    }
+
     private static func copyIfExists(from path: String, to url: URL) {
         let fm = FileManager.default
         guard fm.fileExists(atPath: path) else { return }
         try? fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if fm.fileExists(atPath: url.path) {
+            try? fm.removeItem(at: url)
+        }
         try? fm.copyItem(atPath: path, toPath: url.path)
+    }
+
+    private static func transcriptIndex(fm: FileManager = .default) -> [TranscriptIndexEntry] {
+        let home = fm.homeDirectoryForCurrentUser.path
+        let roots: [(String, String)] = [
+            ("claude", "\(home)/.claude/projects"),
+            ("codex", "\(ConfigInstaller.codexHome())/sessions"),
+        ]
+        let entries = roots.flatMap { source, path in
+            transcriptEntries(source: source, root: URL(fileURLWithPath: path), fm: fm)
+        }
+        return entries
+            .sorted { $0.modifiedAt > $1.modifiedAt }
+            .prefix(50)
+            .map { $0 }
+    }
+
+    private static func transcriptEntries(
+        source: String,
+        root: URL,
+        fm: FileManager,
+        maxScanned: Int = 5_000
+    ) -> [TranscriptIndexEntry] {
+        guard fm.fileExists(atPath: root.path),
+              let enumerator = fm.enumerator(
+                at: root,
+                includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey],
+                options: [.skipsHiddenFiles]
+              ) else {
+            return []
+        }
+
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        var scanned = 0
+        var rows: [TranscriptIndexEntry] = []
+        for case let url as URL in enumerator {
+            scanned += 1
+            if scanned > maxScanned { break }
+            guard url.pathExtension.lowercased() == "jsonl" else { continue }
+            let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey])
+            guard values?.isRegularFile == true,
+                  let modifiedAt = values?.contentModificationDate else {
+                continue
+            }
+            rows.append(TranscriptIndexEntry(
+                source: source,
+                path: abbreviateHome(url.standardizedFileURL.path),
+                bytes: Int64(values?.fileSize ?? 0),
+                modifiedAt: iso.string(from: modifiedAt)
+            ))
+        }
+        return rows
+    }
+
+    private static func safeFilename(_ value: String) -> String {
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "._-"))
+        let raw = value.unicodeScalars
+            .map { allowed.contains($0) ? String($0) : "-" }
+            .joined()
+        let name = raw.trimmingCharacters(in: CharacterSet(charactersIn: "-."))
+        return name.isEmpty ? "config" : name
+    }
+
+    private static func abbreviateHome(_ path: String) -> String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        if path == home { return "~" }
+        if path.hasPrefix(home + "/") {
+            return "~/" + String(path.dropFirst(home.count + 1))
+        }
+        return path
     }
 
     private static func runCommand(_ executable: String, args: [String]) -> String {

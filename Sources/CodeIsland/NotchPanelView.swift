@@ -26,6 +26,7 @@ struct NotchPanelView: View {
     /// Anti-mistouch hover-expand delay (ms). Default 50ms, configurable in Settings (R3).
     @AppStorage(SettingsKey.hoverExpandDelayMs) private var hoverExpandDelayMs = SettingsDefaults.hoverExpandDelayMs
     @AppStorage(SettingsKey.glowRingEnabled) private var glowRingEnabled = SettingsDefaults.glowRingEnabled
+    @AppStorage(SettingsKey.glowRingWhenCollapsed) private var glowRingWhenCollapsed = SettingsDefaults.glowRingWhenCollapsed
     @AppStorage(SettingsKey.glowIntensityPct) private var glowIntensityPct = SettingsDefaults.glowIntensityPct
     @AppStorage(SettingsKey.glowRunningIntensityPct) private var glowRunningIntensityPct = SettingsDefaults.glowRunningIntensityPct
     /// When the animated mascot is off, the left wing shows a live-activity label that needs
@@ -215,6 +216,7 @@ struct NotchPanelView: View {
                     enabled: glowRingEnabled,
                     completing: appState.justCompletedSessionId != nil,
                     expanded: shouldShowExpanded,
+                    glowWhenCollapsed: glowRingWhenCollapsed,
                     intensity: Double(glowIntensityPct) / 100.0,
                     runningIntensity: Double(glowRunningIntensityPct) / 100.0
                 )

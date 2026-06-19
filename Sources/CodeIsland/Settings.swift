@@ -43,6 +43,7 @@ enum SettingsKey {
     // Island appearance
     static let showMascot = "showMascot"                // true = animated pixel mascot, false = minimal app icon
     static let glowRingEnabled = "glowRingEnabled"       // outer glow ring around the island
+    static let glowRingWhenCollapsed = "glowRingWhenCollapsed" // show the glow while collapsed (not expanded)
     static let glowIntensityPct = "glowIntensityPct"     // glow brightness for waiting/done, percent (50–200)
     static let glowRunningIntensityPct = "glowRunningIntensityPct" // glow brightness for the running/working state, percent (0–200)
     static let reserveMenuBarWidth = "reserveMenuBarWidth" // reserve real menu-bar width so neighbor icons reflow
@@ -163,6 +164,7 @@ struct SettingsDefaults {
 
     static let showMascot = true
     static let glowRingEnabled = true
+    static let glowRingWhenCollapsed = true
     static let glowIntensityPct = 130
     static let glowRunningIntensityPct = 100
     static let reserveMenuBarWidth = true
@@ -266,6 +268,7 @@ class SettingsManager {
             SettingsKey.hoverExpandDelayMs: SettingsDefaults.hoverExpandDelayMs,
             SettingsKey.showMascot: SettingsDefaults.showMascot,
             SettingsKey.glowRingEnabled: SettingsDefaults.glowRingEnabled,
+            SettingsKey.glowRingWhenCollapsed: SettingsDefaults.glowRingWhenCollapsed,
             SettingsKey.glowIntensityPct: SettingsDefaults.glowIntensityPct,
             SettingsKey.glowRunningIntensityPct: SettingsDefaults.glowRunningIntensityPct,
             SettingsKey.reserveMenuBarWidth: SettingsDefaults.reserveMenuBarWidth,
@@ -480,6 +483,13 @@ class SettingsManager {
     var glowRunningIntensityPct: Int {
         get { defaults.object(forKey: SettingsKey.glowRunningIntensityPct) == nil ? SettingsDefaults.glowRunningIntensityPct : defaults.integer(forKey: SettingsKey.glowRunningIntensityPct) }
         set { defaults.set(min(200, max(0, newValue)), forKey: SettingsKey.glowRunningIntensityPct) }
+    }
+
+    /// Whether the glow shows while the island is collapsed (not expanded). When false, the glow
+    /// appears only once the panel is open.
+    var glowRingWhenCollapsed: Bool {
+        get { defaults.object(forKey: SettingsKey.glowRingWhenCollapsed) == nil ? SettingsDefaults.glowRingWhenCollapsed : defaults.bool(forKey: SettingsKey.glowRingWhenCollapsed) }
+        set { defaults.set(newValue, forKey: SettingsKey.glowRingWhenCollapsed) }
     }
 
     /// How long the green "done" completion card stays before auto-collapse, in seconds (clamped 2…20).

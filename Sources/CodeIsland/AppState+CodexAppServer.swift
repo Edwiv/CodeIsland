@@ -319,9 +319,21 @@ extension AppState {
         let sessionId = AppState.codexAppSessionPrefix + threadId
         guard var snapshot = sessions[sessionId] else { return }
 
+        // Capture the prior status BEFORE remapping so we can detect a turn finishing.
+        let previousStatus = snapshot.status
+        let newType = params["status"]?.asObject?["type"]?.asString
         applyCodexThreadStatus(&snapshot, status: params["status"]?.asObject)
         snapshot.lastActivity = Date()
         sessions[sessionId] = snapshot
+
+        // Codex Desktop reports completion only as a status flip to `idle` — it has no CLI-style
+        // "Stop" event, so the reducer's `.enqueueCompletion` never runs and the notch showed no
+        // feedback. Fire the same completion flash / card / sound here on a genuine active→idle
+        // edge (guard on type == "idle" so a systemError/notLoaded idle doesn't celebrate).
+        if newType == "idle", previousStatus != .idle {
+            SoundManager.shared.handleEvent("Stop")
+            enqueueCompletion(sessionId)
+        }
         refreshDerivedState()
     }
 

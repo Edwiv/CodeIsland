@@ -463,6 +463,7 @@ private struct BehaviorPage: View {
     @AppStorage(SettingsKey.hapticIntensity) private var hapticIntensity = SettingsDefaults.hapticIntensity
     @AppStorage(SettingsKey.hoverExpandDelayMs) private var hoverExpandDelayMs = SettingsDefaults.hoverExpandDelayMs
     @AppStorage(SettingsKey.glowRingEnabled) private var glowRingEnabled = SettingsDefaults.glowRingEnabled
+    @AppStorage(SettingsKey.glowRingWhenCollapsed) private var glowRingWhenCollapsed = SettingsDefaults.glowRingWhenCollapsed
     @AppStorage(SettingsKey.glowIntensityPct) private var glowIntensityPct = SettingsDefaults.glowIntensityPct
     @AppStorage(SettingsKey.glowRunningIntensityPct) private var glowRunningIntensityPct = SettingsDefaults.glowRunningIntensityPct
     @AppStorage(SettingsKey.completionDisplaySeconds) private var completionDisplaySeconds = SettingsDefaults.completionDisplaySeconds
@@ -580,6 +581,13 @@ private struct BehaviorPage: View {
                 )
 
                 if glowRingEnabled {
+                    BehaviorToggleRow(
+                        title: l10n["glow_when_collapsed"],
+                        desc: l10n["glow_when_collapsed_desc"],
+                        isOn: $glowRingWhenCollapsed,
+                        animation: .smartSuppress
+                    )
+
                     VStack(alignment: .leading, spacing: 4) {
                         HStack {
                             Text(l10n["glow_intensity"])

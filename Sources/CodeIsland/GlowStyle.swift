@@ -42,6 +42,9 @@ struct IslandGlowBackground<S: Shape>: View {
     /// True while the panel is expanded. Drives the lit edge + floating depth even when idle
     /// (AgentIsland's "is-open" look); kept off while collapsed so the notch stays pure black.
     var expanded: Bool = false
+    /// When false, the glow is fully suppressed while collapsed — it appears only once the panel
+    /// is expanded. (Setting: "Glow When Collapsed".)
+    var glowWhenCollapsed: Bool = true
     var intensity: Double = 1.3
     var runningIntensity: Double = 1.0
 
@@ -58,6 +61,8 @@ struct IslandGlowBackground<S: Shape>: View {
     /// shape, exposing the rectangular silhouette ("粗糙"). Opacity 0 ⇒ no colored glow.
     private func resolvedGlow() -> (color: Color, opacity: Double) {
         guard enabled else { return (.clear, 0) }
+        // Collapsed + opted out: no glow until the panel is expanded.
+        if !expanded && !glowWhenCollapsed { return (.clear, 0) }
         if completing {
             return (IslandGlowPalette.done, scaled(0.62, intensity))
         }
