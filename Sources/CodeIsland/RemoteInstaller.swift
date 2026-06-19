@@ -14,7 +14,7 @@ private struct RemoteCommandResult: Sendable {
 }
 
 enum RemoteInstaller {
-    private static let remoteHookVersion = "0.1.2"
+    private static let remoteHookVersion = "0.3.0"
     private static let remoteOpencodePluginVersion = "v2"
 
     static func installAll(host: RemoteHost, remoteSocketPath: String) async -> RemoteInstallResult {
@@ -42,6 +42,23 @@ enum RemoteInstaller {
 
         let summary = configure.stdoutSummary.isEmpty ? "Claude/Codex/CodeBuddy/Traecli/OpenCode remote hooks installed" : configure.stdoutSummary
         return RemoteInstallResult(ok: true, message: summary)
+    }
+
+    /// Connect-time discovery (#4): ask the remote hook to replay recently-active sessions so
+    /// sessions already running before CodeIsland connected show up — not just newly-created
+    /// ones. Fire-and-forget: the replayed SessionStart events flow back over the -R tunnel to
+    /// the local socket, marked `_discovered` so the app registers them silently.
+    static func discoverSessions(host: RemoteHost, remoteSocketPath: String) async {
+        let env = "CODEISLAND_SOCKET_PATH=\(shQuote(remoteSocketPath)) "
+            + "CODEISLAND_REMOTE_HOST_ID=\(shQuote(host.id)) "
+            + "CODEISLAND_REMOTE_HOST_NAME=\(shQuote(host.name))"
+        let command = "\(env) python3 ~/.codeisland/codeisland-remote-hook.py --discover"
+        _ = await runSSH(host: host, command: command, timeout: 30)
+    }
+
+    /// POSIX single-quote shell escaping for an arbitrary value.
+    private static func shQuote(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
     /// Probe the remote user's UID and return a per-user socket path so that multiple

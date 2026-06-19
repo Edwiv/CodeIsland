@@ -8,6 +8,9 @@ struct RemoteHost: Identifiable, Codable, Equatable, Sendable {
     var port: Int?
     var identityFile: String
     var autoConnect: Bool
+    /// Auto-resume: when the tunnel drops unexpectedly, reconnect automatically even if
+    /// this host isn't an auto-connect-at-startup host (R4).
+    var autoResume: Bool
     /// Optional SSH_AUTH_SOCK path — lets password-manager-backed SSH agents
     /// (1Password, Bitwarden, etc.) sign the handshake when the GUI launch
     /// didn't inherit the env var from a shell. See issue #81.
@@ -21,6 +24,7 @@ struct RemoteHost: Identifiable, Codable, Equatable, Sendable {
         port: Int? = nil,
         identityFile: String = "",
         autoConnect: Bool = false,
+        autoResume: Bool = false,
         authSocket: String = ""
     ) {
         self.id = id
@@ -30,10 +34,11 @@ struct RemoteHost: Identifiable, Codable, Equatable, Sendable {
         self.port = port
         self.identityFile = identityFile
         self.autoConnect = autoConnect
+        self.autoResume = autoResume
         self.authSocket = authSocket
     }
 
-    // Backward compatibility: hosts persisted before authSocket existed decode with ""
+    // Backward compatibility: hosts persisted before autoResume/authSocket existed decode with defaults
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.id = try c.decode(String.self, forKey: .id)
@@ -43,6 +48,7 @@ struct RemoteHost: Identifiable, Codable, Equatable, Sendable {
         self.port = try c.decodeIfPresent(Int.self, forKey: .port)
         self.identityFile = try c.decode(String.self, forKey: .identityFile)
         self.autoConnect = try c.decode(Bool.self, forKey: .autoConnect)
+        self.autoResume = try c.decodeIfPresent(Bool.self, forKey: .autoResume) ?? false
         self.authSocket = try c.decodeIfPresent(String.self, forKey: .authSocket) ?? ""
     }
 

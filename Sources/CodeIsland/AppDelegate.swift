@@ -21,7 +21,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Pre-set app icon so Dock/menu bar use the packaged bundle icon.
         NSApp.applicationIconImage = SettingsWindowController.bundleAppIcon()
         SettingsWindowController.shared.appState = appState
+        DashboardWindowController.shared.appState = appState
         StatusItemController.shared.startObserving()
+        IslandReservationItem.shared.start()
         // Start HookServer BEFORE installing hooks into CLI configs.
         // If we write settings.json first, Claude Code picks up the new hooks
         // immediately but the socket isn't listening yet — PermissionRequest
@@ -95,6 +97,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         AppleCompanionPublisher.shared.configure(
             enabled: appleCompanionEnabled,
             heartbeatSeconds: appleCompanionHeartbeat > 0 ? appleCompanionHeartbeat : SettingsDefaults.appleCompanionHeartbeatSeconds
+        )
+
+        // Lark (Feishu) bot push: forward unanswered confirmations to the user's phone (R: lark).
+        LarkNotifier.shared.attach(appState)
+        let lark = SettingsManager.shared
+        LarkNotifier.shared.configure(
+            enabled: lark.larkEnabled,
+            appId: lark.larkAppId,
+            appSecret: lark.larkAppSecret,
+            targetType: lark.larkTargetType,
+            targetValue: lark.larkTargetValue,
+            pushDelaySeconds: lark.larkPushDelaySeconds,
+            includeQuestions: lark.larkIncludeQuestions
         )
 
         // Hooks auto-recovery: periodic + app activation trigger

@@ -19,11 +19,26 @@ struct MascotView: View {
     let status: MascotAgentStatus
     var size: CGFloat = 27
     @AppStorage(SettingsKey.mascotSpeed) private var speedPct = SettingsDefaults.mascotSpeed
+    @AppStorage(SettingsKey.showMascot) private var showMascot = SettingsDefaults.showMascot
     @ObservedObject private var animationGate = MascotAnimationGate.shared
 
     var body: some View {
         Group {
-            switch source {
+            if !showMascot {
+                // Avatar disabled — show the minimal, style-unified per-app icon (R1).
+                AppIconGlyph(source: source, size: size)
+            } else {
+                mascot
+            }
+        }
+        .environment(\.mascotSpeed, Double(speedPct) / 100.0)
+        .environment(\.mascotAnimationsActive, animationGate.animationsActive)
+        .environment(\.mascotAnimationEpoch, animationGate.epoch)
+    }
+
+    @ViewBuilder
+    private var mascot: some View {
+        switch source {
             case "codex":
                 DexView(status: status, size: size)
             case "gemini", "google-antigravity":
@@ -64,9 +79,5 @@ struct MascotView: View {
             default:
                 ClawdView(status: status, size: size)
             }
-        }
-        .environment(\.mascotSpeed, Double(speedPct) / 100.0)
-        .environment(\.mascotAnimationsActive, animationGate.animationsActive)
-        .environment(\.mascotAnimationEpoch, animationGate.epoch)
     }
 }

@@ -6,16 +6,36 @@ public struct ConversationTailDelta: Equatable, Sendable {
     public let sessionId: String
     public let lastUserPrompt: String?
     public let lastAssistantMessage: String?
+    // Token usage from the latest assistant turn's `message.usage` (Claude-style transcripts).
+    // nil for agents whose transcripts don't carry usage (#5).
+    public let inputTokens: Int?
+    public let outputTokens: Int?
+    public let cacheReadTokens: Int?
+    public let cacheCreationTokens: Int?
 
-    public init(sessionId: String, lastUserPrompt: String?, lastAssistantMessage: String?) {
+    public init(
+        sessionId: String,
+        lastUserPrompt: String?,
+        lastAssistantMessage: String?,
+        inputTokens: Int? = nil,
+        outputTokens: Int? = nil,
+        cacheReadTokens: Int? = nil,
+        cacheCreationTokens: Int? = nil
+    ) {
         self.sessionId = sessionId
         self.lastUserPrompt = lastUserPrompt
         self.lastAssistantMessage = lastAssistantMessage
+        self.inputTokens = inputTokens
+        self.outputTokens = outputTokens
+        self.cacheReadTokens = cacheReadTokens
+        self.cacheCreationTokens = cacheCreationTokens
     }
 
     /// A delta only carries signal when at least one field is non-nil.
     public var isEmpty: Bool {
         lastUserPrompt == nil && lastAssistantMessage == nil
+            && inputTokens == nil && outputTokens == nil
+            && cacheReadTokens == nil && cacheCreationTokens == nil
     }
 }
 
@@ -187,7 +207,11 @@ public final class JSONLTailer: @unchecked Sendable {
             let delta = ConversationTailDelta(
                 sessionId: watch.sessionId,
                 lastUserPrompt: scan.delta.lastUserPrompt,
-                lastAssistantMessage: scan.delta.lastAssistantMessage
+                lastAssistantMessage: scan.delta.lastAssistantMessage,
+                inputTokens: scan.delta.inputTokens,
+                outputTokens: scan.delta.outputTokens,
+                cacheReadTokens: scan.delta.cacheReadTokens,
+                cacheCreationTokens: scan.delta.cacheCreationTokens
             )
             onDelta(delta)
         }
@@ -220,7 +244,15 @@ public final class JSONLTailer: @unchecked Sendable {
         public struct Delta: Equatable {
             public var lastUserPrompt: String?
             public var lastAssistantMessage: String?
-            public var isEmpty: Bool { lastUserPrompt == nil && lastAssistantMessage == nil }
+            public var inputTokens: Int?
+            public var outputTokens: Int?
+            public var cacheReadTokens: Int?
+            public var cacheCreationTokens: Int?
+            public var isEmpty: Bool {
+                lastUserPrompt == nil && lastAssistantMessage == nil
+                    && inputTokens == nil && outputTokens == nil
+                    && cacheReadTokens == nil && cacheCreationTokens == nil
+            }
         }
         public let delta: Delta
         public let trailingFragment: Data
@@ -279,6 +311,14 @@ public final class JSONLTailer: @unchecked Sendable {
         case "assistant":
             if let text = extractText(from: message["content"]) {
                 delta.lastAssistantMessage = text
+            }
+            // Capture token usage for the context-window / token chips (#5). Present on
+            // Claude-style transcripts; absent for agents that don't write `message.usage`.
+            if let usage = message["usage"] as? [String: Any] {
+                if let v = usage["input_tokens"] as? Int { delta.inputTokens = v }
+                if let v = usage["output_tokens"] as? Int { delta.outputTokens = v }
+                if let v = usage["cache_read_input_tokens"] as? Int { delta.cacheReadTokens = v }
+                if let v = usage["cache_creation_input_tokens"] as? Int { delta.cacheCreationTokens = v }
             }
         default:
             break

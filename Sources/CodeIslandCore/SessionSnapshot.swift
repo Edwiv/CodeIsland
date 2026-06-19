@@ -77,6 +77,15 @@ public struct SessionSnapshot: Sendable {
     public var permissionMode: String?
     public var toolHistory: [ToolHistoryEntry] = []
     public var totalToolCallCount: Int = 0
+    // Token usage from the latest assistant turn (#5). nil until a usage-bearing transcript
+    // line is parsed (Claude-style `message.usage`); absent for agents without usage.
+    public var lastInputTokens: Int?
+    public var lastOutputTokens: Int?
+    public var lastCacheReadTokens: Int?
+    public var lastCacheCreationTokens: Int?
+    /// Context-window limit reported by the agent itself (e.g. Cursor's model_params
+    /// `context: "300k"`), overriding the model-name default when present (#5).
+    public var contextWindowOverride: Int?
     public var subagents: [String: SubagentState] = [:]
     public var startTime: Date = Date()
     public var lastUserPrompt: String?
@@ -196,6 +205,22 @@ public struct SessionSnapshot: Sendable {
         return nil
     }
 
+    /// Resolve the effective agent source from a hook payload, correcting a known
+    /// mislabel: remote Cursor sessions report `_source: "claude"` even though the
+    /// payload is clearly Cursor. `cursor_version` is a definitive Cursor marker, so
+    /// prefer "cursor" when present. Local Cursor already reports cursor (unaffected),
+    /// and non-Cursor agents never carry `cursor_version`.
+    public static func resolvedSource(from rawJSON: [String: Any]) -> String? {
+        if rawJSON["cursor_version"] != nil {
+            // Honor an explicit cursor-cli tag (CLI agent), otherwise it's the Cursor IDE.
+            if normalizedSupportedSource(rawJSON["_source"] as? String) == "cursor-cli" {
+                return "cursor-cli"
+            }
+            return "cursor"
+        }
+        return normalizedSupportedSource(rawJSON["_source"] as? String)
+    }
+
     private static func loadCustomSources() -> Set<String> {
         guard let data = UserDefaults.standard.data(forKey: customCLIConfigsKey),
               let raw = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
@@ -307,16 +332,69 @@ public struct SessionSnapshot: Sendable {
 
     /// Shortened model name: "claude-opus-4-6" → "opus"
     public var shortModelName: String? {
-        guard let model = model else { return nil }
+        guard let model = model, !model.isEmpty else { return nil }
         let lower = model.lowercased()
         if lower.contains("opus") { return "opus" }
         if lower.contains("sonnet") { return "sonnet" }
         if lower.contains("haiku") { return "haiku" }
         if lower.contains("gemini") { return "gemini" }
-        if let last = model.split(separator: "-").last, last.count <= 8 {
+        if lower.contains("gpt-5") { return "gpt-5" }
+        if lower.contains("gpt-4") { return "gpt-4" }
+        if lower.contains("codex") { return "codex" }
+        // Unknown slug — e.g. an internal/preview codename like "orange_o48". Prefer the
+        // last "-"-delimited segment when it's compact, otherwise show the whole slug. Never
+        // slice a fixed prefix: that cut "orange_o48" mid-word into a meaningless "orange_o".
+        if let last = model.split(separator: "-").last, last.count <= 12 {
             return String(last)
         }
-        return String(model.prefix(8))
+        return model.count <= 16 ? model : String(model.prefix(15)) + "\u{2026}"
+    }
+
+    /// Approximate tokens currently filling the context window = the latest assistant
+    /// turn's prompt size (input + cache read + cache creation). nil when no usage seen (#5).
+    public var contextTokensUsed: Int? {
+        guard let input = lastInputTokens else { return nil }
+        return input + (lastCacheReadTokens ?? 0) + (lastCacheCreationTokens ?? 0)
+    }
+
+    /// Model context-window limit in tokens, derived from the model name. Claude-first;
+    /// nil when unknown (the chip then falls back to showing the raw token count).
+    public var contextWindowLimit: Int? {
+        contextWindowOverride ?? SessionSnapshot.contextWindowLimit(forModel: model)
+    }
+
+    /// Percent of the context window consumed (0–100) when usage and limit are both known.
+    public var contextWindowPercent: Int? {
+        guard let used = contextTokensUsed, let limit = contextWindowLimit, limit > 0 else { return nil }
+        return min(100, Int((Double(used) / Double(limit)) * 100.0))
+    }
+
+    public static func contextWindowLimit(forModel model: String?) -> Int? {
+        guard let model = model?.lowercased() else { return nil }
+        // Claude models: 200k standard context (1M is opt-in beta; default to 200k).
+        if model.contains("claude") || model.contains("sonnet") || model.contains("opus") || model.contains("haiku") {
+            return 200_000
+        }
+        if model.contains("gpt-5") || model.contains("gpt-4.1") { return 1_000_000 }
+        if model.contains("gpt-4o") || model.contains("o1") || model.contains("o3") || model.contains("codex") { return 128_000 }
+        if model.contains("gemini") { return 1_000_000 }
+        return nil
+    }
+
+    /// Compact token formatter: 950 → "950", 12_300 → "12.3k", 1_200_000 → "1.2M".
+    public static func compactTokens(_ count: Int) -> String {
+        if count >= 1_000_000 { return String(format: "%.1fM", Double(count) / 1_000_000) }
+        if count >= 1_000 { return String(format: "%.1fk", Double(count) / 1_000) }
+        return "\(count)"
+    }
+
+    /// Parse a human token-limit string like "300k", "1M", or "200000" into an Int.
+    public static func parseTokenLimit(_ raw: String) -> Int? {
+        let t = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !t.isEmpty else { return nil }
+        if t.hasSuffix("k"), let n = Double(t.dropLast()) { return Int(n * 1_000) }
+        if t.hasSuffix("m"), let n = Double(t.dropLast()) { return Int(n * 1_000_000) }
+        return Int(t)
     }
 
     /// Source label for display
@@ -595,6 +673,9 @@ public func reduceEvent(
         extractMetadata(into: &sessions, sessionId: sessionId, event: event)
     }
     let isRemote = sessions[sessionId]?.isRemote == true
+    // A discovery replay (remote connect-time scan): register the session quietly — no sound,
+    // no stealing the active selection, and never clobber a session we already track.
+    let isDiscovered = (event.rawJSON["_discovered"] as? Bool) == true
 
     // Cline ships hooks via shell scripts that spawn the bridge in the background,
     // so events for the same session can arrive out of order. Once a task round
@@ -770,6 +851,8 @@ public func reduceEvent(
         }
         effects.append(.enqueueCompletion(sessionId: sessionId))
     case "SessionStart":
+        // Discovery replay must not reset a session we already track (it would wipe live state).
+        if isDiscovered, sessions[sessionId] != nil { break }
         effects.append(.stopMonitor(sessionId: sessionId))
         sessions[sessionId] = SessionSnapshot(startTime: Date())
         // Re-apply metadata from this event (common extraction above wrote to the old session)
@@ -779,7 +862,7 @@ public func reduceEvent(
             sessions[sessionId]?.cliPid = pid_t(ppid)
             sessions[sessionId]?.cliStartTime = nil
         }
-        if let source = SessionSnapshot.normalizedSupportedSource(event.rawJSON["_source"] as? String) {
+        if let source = SessionSnapshot.resolvedSource(from: event.rawJSON) {
             sessions[sessionId]?.source = source
         }
         if let app = event.rawJSON["_term_app"] as? String, !app.isEmpty { sessions[sessionId]?.termApp = app }
@@ -833,6 +916,30 @@ public func reduceEvent(
            !sessionTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             sessions[sessionId]?.sessionTitle = sessionTitle
         }
+        // Discovery replay carries the last exchange so a pre-existing remote session shows
+        // conversation content immediately (there's no local transcript to tail for it).
+        if let lastUser = event.rawJSON["last_user_message"] as? String,
+           !lastUser.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            sessions[sessionId]?.lastUserPrompt = lastUser
+            sessions[sessionId]?.addRecentMessage(ChatMessage(isUser: true, text: lastUser))
+        } else if sessions[sessionId]?.isRemote == true,
+                  sessions[sessionId]?.lastUserPrompt == nil,
+                  sessions[sessionId]?.recentMessages.isEmpty == true,
+                  let title = event.rawJSON["session_title"] as? String,
+                  !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            // Remote discovery replay whose JSONL yielded only a summary line (its real
+            // user turns were meta/noise, or the assistant turn had no extractable text):
+            // surface the title as the user-prompt line so the restored remote row renders
+            // in the same ">" format as live sessions instead of title-only (#2). Guarded by
+            // `lastUserPrompt == nil` so a repeated discovery replay never duplicates it.
+            sessions[sessionId]?.lastUserPrompt = title
+            sessions[sessionId]?.addRecentMessage(ChatMessage(isUser: true, text: title))
+        }
+        if let lastAssistant = event.rawJSON["last_assistant_message"] as? String,
+           !lastAssistant.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            sessions[sessionId]?.lastAssistantMessage = lastAssistant
+            sessions[sessionId]?.addRecentMessage(ChatMessage(isUser: false, text: lastAssistant))
+        }
         if !isRemote {
             effects.append(.tryMonitorSession(sessionId: sessionId))
         }
@@ -866,13 +973,15 @@ public func reduceEvent(
         effects.append(.tryMonitorSession(sessionId: sessionId))
     }
 
-    // Trigger sound for this event
-    effects.append(.playSound(eventName))
+    // Trigger sound for this event (never for a silent discovery replay).
+    if !isDiscovered {
+        effects.append(.playSound(eventName))
+    }
 
     // Switch display to the session that just had activity
     if eventName == "Stop" {
         // Stop event: keep activeSessionId on completed session (set by enqueueCompletion)
-    } else if sessions[sessionId]?.status != .idle {
+    } else if !isDiscovered, sessions[sessionId]?.status != .idle {
         effects.append(.setActiveSession(sessionId: sessionId))
     }
     // Note: the "else if activeSessionId == sessionId → mostActive" case
@@ -962,6 +1071,21 @@ public func extractMetadata(into sessions: inout [String: SessionSnapshot], sess
     if let model = event.rawJSON["model"] as? String, !model.isEmpty {
         sessions[sessionId]?.model = model
     }
+    // Token usage carried directly in the hook payload (Cursor's stop event; #5). Claude
+    // supplies these via the transcript (JSONLTailer) instead — both feed the same fields.
+    if let v = event.rawJSON["input_tokens"] as? Int { sessions[sessionId]?.lastInputTokens = v }
+    if let v = event.rawJSON["output_tokens"] as? Int { sessions[sessionId]?.lastOutputTokens = v }
+    if let v = event.rawJSON["cache_read_tokens"] as? Int { sessions[sessionId]?.lastCacheReadTokens = v }
+    if let v = event.rawJSON["cache_write_tokens"] as? Int { sessions[sessionId]?.lastCacheCreationTokens = v }
+    // Cursor reports its configured context window in model_params (e.g. context: "300k"),
+    // which can differ from the model's default — use it so the context % is accurate.
+    if let params = event.rawJSON["model_params"] as? [[String: Any]] {
+        for p in params where (p["id"] as? String) == "context" {
+            if let val = p["value"] as? String, let limit = SessionSnapshot.parseTokenLimit(val) {
+                sessions[sessionId]?.contextWindowOverride = limit
+            }
+        }
+    }
     if let mode = event.rawJSON["permission_mode"] as? String {
         sessions[sessionId]?.permissionMode = mode
     }
@@ -1004,7 +1128,7 @@ public func extractMetadata(into sessions: inout [String: SessionSnapshot], sess
         sessions[sessionId]?.cliPid = pid_t(ppid)
         sessions[sessionId]?.cliStartTime = nil
     }
-    if let source = SessionSnapshot.normalizedSupportedSource(event.rawJSON["_source"] as? String) {
+    if let source = SessionSnapshot.resolvedSource(from: event.rawJSON) {
         sessions[sessionId]?.source = source
     }
     // cmux surface / workspace (injected by bridge from CMUX_SURFACE_ID / CMUX_WORKSPACE_ID env vars)

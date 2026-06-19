@@ -36,6 +36,16 @@ struct PersistedSession: Codable {
 enum SessionPersistence {
     private static let dirPath = FileManager.default.homeDirectoryForCurrentUser.path + "/.codeisland"
     private static let filePath = dirPath + "/sessions.json"
+    /// Cap persisted sessions (mirrors AgentIsland's MAX_SESSIONS) so the file can't grow unbounded.
+    private static let maxSessions = 1000
+    private static let currentVersion = 1
+
+    /// Versioned wrapper so the on-disk format can evolve without silently mis-decoding (R5).
+    struct PersistedSnapshot: Codable {
+        let version: Int
+        let savedAt: Date
+        let sessions: [PersistedSession]
+    }
 
     static func save(_ sessions: [String: SessionSnapshot]) {
         let persisted: [PersistedSession] = sessions.compactMap { (id, s) in
@@ -69,11 +79,14 @@ enum SessionPersistence {
                 lastActivity: s.lastActivity
             )
         }
+        // Keep the most recently active sessions when over the cap.
+        let capped = persisted.sorted { $0.lastActivity > $1.lastActivity }.prefix(maxSessions)
+        let snapshot = PersistedSnapshot(version: currentVersion, savedAt: Date(), sessions: Array(capped))
         do {
             try FileManager.default.createDirectory(atPath: dirPath, withIntermediateDirectories: true)
             let encoder = JSONEncoder()
             encoder.dateEncodingStrategy = .iso8601
-            let data = try encoder.encode(persisted)
+            let data = try encoder.encode(snapshot)
             try data.write(to: URL(fileURLWithPath: filePath), options: Data.WritingOptions.atomic)
         } catch {}
     }
@@ -82,6 +95,12 @@ enum SessionPersistence {
         guard let data = try? Data(contentsOf: URL(fileURLWithPath: filePath)) else { return [] }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
+        // Preferred: versioned wrapper.
+        if let snapshot = try? decoder.decode(PersistedSnapshot.self, from: data) {
+            guard snapshot.version == currentVersion else { return [] }
+            return snapshot.sessions
+        }
+        // Legacy fallback: a bare top-level [PersistedSession] array (pre-versioning).
         return (try? decoder.decode([PersistedSession].self, from: data)) ?? []
     }
 

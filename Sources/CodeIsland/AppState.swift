@@ -105,6 +105,8 @@ final class AppState {
     /// Preview-only: mock question payload for DebugHarness (no continuation needed)
     var previewQuestionPayload: QuestionPayload?
     var surface: IslandSurface = .collapsed
+    /// Bumped each time a session completes (drives the one-shot green "done" glow flash, R6).
+    private(set) var doneFlashNonce: Int = 0
 
     var justCompletedSessionId: String? {
         if case .completionCard(let id) = surface { return id }
@@ -126,6 +128,9 @@ final class AppState {
     private var lastFSScanTime: Date = .distantPast
     private var discoveryScanTask: Task<Void, Never>?
     private var pendingDiscoveryRescan = false
+    /// Periodic safety-net rescan for already-running CLI sessions, in case an
+    /// FSEvent or hook is missed (R5). Coalesced via requestDiscoveryScan().
+    private var discoveryTimer: Timer?
     private var isShowingCompletion: Bool {
         if case .completionCard = surface { return true }
         return false
@@ -631,6 +636,7 @@ final class AppState {
         }
         ESP32StatePublisher.shared.notifyDirty()
         AppleCompanionPublisher.shared.notifyDirty()
+        LarkNotifier.shared.notifyDirty()
     }
 
     /// Start monitoring the CLI process for a session.
@@ -788,10 +794,13 @@ final class AppState {
         surface = .completionCard(sessionId: sessionId)
         completionHasBeenEntered = false
         deferCollapseOnMouseLeave = false
+        doneFlashNonce &+= 1
 
         autoCollapseTask?.cancel()
         autoCollapseTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            // Configurable completion-card dwell time (Settings → Behavior). Default 7s.
+            let seconds = Double(SettingsManager.shared.completionDisplaySeconds)
+            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
             guard !Task.isCancelled else { return }
             showNextCompletionOrCollapse()
         }
@@ -883,6 +892,7 @@ final class AppState {
         if totalSessionCount != summary.totalSessionCount { totalSessionCount = summary.totalSessionCount }
         ESP32StatePublisher.shared.notifyDirty()
         AppleCompanionPublisher.shared.notifyDirty()
+        LarkNotifier.shared.notifyDirty()
     }
 
     private func refreshProviderTitle(for trackedSessionId: String, providerSessionId: String? = nil) {
@@ -1173,6 +1183,60 @@ final class AppState {
                 log.info("Ignored Buddy skip command because question queue is empty")
             }
         }
+    }
+
+    // MARK: - Lark bot decisions (phone -> desktop)
+
+    /// Apply a Lark approval decision to a specific session's permission request. The request
+    /// may not be the queue head (multiple sessions can be queued), so bring it to the front and
+    /// reuse the existing head-based approve/deny so all the response-building logic is shared.
+    func handleLarkApproval(sessionId: String, actionId: String) {
+        guard let idx = permissionQueue.firstIndex(where: { ($0.event.sessionId ?? "default") == sessionId }) else { return }
+        if idx != 0 {
+            let req = permissionQueue.remove(at: idx)
+            permissionQueue.insert(req, at: 0)
+            activeSessionId = sessionId
+            if surface != .sessionList { surface = .approvalCard(sessionId: sessionId) }
+        }
+        switch actionId {
+        case "allowAlways": approvePermission(always: true)
+        case "deny":        denyPermission()
+        default:            approvePermission(always: false)   // allowOnce
+        }
+    }
+
+    /// Apply Lark question answers (one per AskUserQuestion item, in order) to a session.
+    func handleLarkQuestionAnswer(sessionId: String, answers: [String]) {
+        guard let idx = questionQueue.firstIndex(where: { ($0.event.sessionId ?? "default") == sessionId }) else { return }
+        if idx != 0 {
+            let req = questionQueue.remove(at: idx)
+            questionQueue.insert(req, at: 0)
+            activeSessionId = sessionId
+            surface = .questionCard(sessionId: sessionId)
+        }
+        let head = questionQueue[0]
+        let items: [AskUserQuestionItem]
+        if let state = head.askUserQuestionState, !state.items.isEmpty {
+            items = state.items
+        } else {
+            items = [AskUserQuestionItem(payload: head.question, answerKey: head.question.header ?? "answer", multiSelect: false)]
+        }
+        let pairs: [(question: String, answer: String)] = items.enumerated().map { i, it in
+            (question: it.payload.question, answer: i < answers.count ? answers[i] : "")
+        }
+        answerQuestionMulti(pairs)
+    }
+
+    /// Skip a session's question from Lark (maps to the same single-consumption skip path).
+    func handleLarkSkip(sessionId: String) {
+        guard let idx = questionQueue.firstIndex(where: { ($0.event.sessionId ?? "default") == sessionId }) else { return }
+        if idx != 0 {
+            let req = questionQueue.remove(at: idx)
+            questionQueue.insert(req, at: 0)
+            activeSessionId = sessionId
+            surface = .questionCard(sessionId: sessionId)
+        }
+        skipQuestion()
     }
 
     func answerCompanionQuestion(_ answer: String) {
@@ -2050,7 +2114,10 @@ final class AppState {
             // Reattach exit monitoring without changing the restored idle/running snapshot.
             tryMonitorSession(p.sessionId)
         }
-        SessionPersistence.clear()
+        // Don't delete the file here (R5): a crash before the next debounced save would
+        // otherwise lose everything. Instead re-persist the now-deduped, alive-only set so
+        // the file always reflects current state ("overwrite, never delete", per AgentIsland).
+        scheduleSave()
         _ = applyCodexSubsessionModeToKnownSessions()
         if activeSessionId == nil {
             activeSessionId = sessions.first(where: { $0.value.status != .idle })?.key
@@ -2162,6 +2229,11 @@ final class AppState {
         requestDiscoveryScan()
         // Watch all known session-store roots so discovery keeps working when hooks are missed.
         startProjectsWatcher()
+        // Periodic safety-net rescan (every 20s) in case FSEvents/hooks are missed (R5).
+        discoveryTimer?.invalidate()
+        discoveryTimer = Timer.scheduledTimer(withTimeInterval: 20, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.requestDiscoveryScan() }
+        }
     }
 
     /// FSEventStream on known session-store roots — fires when transcript/event files change.
@@ -2614,6 +2686,8 @@ final class AppState {
         cleanupTimer = nil
         saveTimer?.invalidate()
         saveTimer = nil
+        discoveryTimer?.invalidate()
+        discoveryTimer = nil
         discoveryScanTask?.cancel()
         discoveryScanTask = nil
         pendingDiscoveryRescan = false
@@ -2624,6 +2698,7 @@ final class AppState {
         rotationTimer?.invalidate()
         cleanupTimer?.invalidate()
         saveTimer?.invalidate()
+        discoveryTimer?.invalidate()
         if let stream = fsEventStream {
             FSEventStreamStop(stream)
             FSEventStreamInvalidate(stream)

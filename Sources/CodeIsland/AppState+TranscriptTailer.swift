@@ -39,6 +39,12 @@ extension AppState {
             mutated = true
         }
 
+        // Token usage from the latest assistant turn (#5).
+        if let v = delta.inputTokens, session.lastInputTokens != v { session.lastInputTokens = v; mutated = true }
+        if let v = delta.outputTokens, session.lastOutputTokens != v { session.lastOutputTokens = v; mutated = true }
+        if let v = delta.cacheReadTokens, session.lastCacheReadTokens != v { session.lastCacheReadTokens = v; mutated = true }
+        if let v = delta.cacheCreationTokens, session.lastCacheCreationTokens != v { session.lastCacheCreationTokens = v; mutated = true }
+
         if mutated {
             session.lastActivity = Date()
             sessions[delta.sessionId] = session

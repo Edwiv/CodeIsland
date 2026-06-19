@@ -5,7 +5,13 @@ import os.log
 private let log = Logger(subsystem: "com.codeisland", category: "Panel")
 
 private class KeyablePanel: NSPanel {
-    override var canBecomeKey: Bool { true }
+    /// Only allow the panel to become key when it is showing an interactive
+    /// (expanded) surface. While collapsed, staying non-key keeps the frontmost
+    /// app (e.g. a fullscreen app) as the key window — so macOS auto-hides the
+    /// revealed menu bar once the cursor leaves the island, instead of leaving it
+    /// stuck visible (#fullscreen title-bar reveal).
+    var canBecomeKeyProvider: (() -> Bool)?
+    override var canBecomeKey: Bool { canBecomeKeyProvider?() ?? true }
 }
 
 /// Ensures first click on a nonactivatingPanel fires SwiftUI actions
@@ -17,8 +23,16 @@ private class NotchHostingView<Content: View>: NSHostingView<Content> {
     /// When true, the deferred handler is setting super — don't re-defer.
     private var applyingDeferred = false
 
+    /// Returns true only when the panel should grab key focus on click (expanded,
+    /// interactive surfaces such as the question/approval cards). Gating this stops
+    /// a click on the collapsed island from pulling focus off a fullscreen app and
+    /// pinning its menu bar open.
+    var shouldBecomeKeyOnClick: (() -> Bool)?
+
     override func mouseDown(with event: NSEvent) {
-        window?.makeKey()
+        if shouldBecomeKeyOnClick?() ?? true {
+            window?.makeKey()
+        }
         super.mouseDown(with: event)
     }
 
@@ -165,6 +179,7 @@ class PanelWindowController: NSObject, NSWindowDelegate {
         panel.isFloatingPanel = true
         panel.acceptsMouseMovedEvents = true
         panel.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.mainMenuWindow)) + 2)
+        panel.canBecomeKeyProvider = { [weak appState] in appState?.surface.isExpanded ?? false }
         panel.backgroundColor = .clear
         panel.isOpaque = false
         panel.hasShadow = false
@@ -291,6 +306,7 @@ class PanelWindowController: NSObject, NSWindowDelegate {
         let contentView = NotchHostingView(rootView: rootView)
         contentView.sizingOptions = []
         contentView.translatesAutoresizingMaskIntoConstraints = true
+        contentView.shouldBecomeKeyOnClick = { [weak appState] in appState?.surface.isExpanded ?? false }
         return contentView
     }
 

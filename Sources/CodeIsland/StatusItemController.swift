@@ -55,6 +55,14 @@ final class StatusItemController: NSObject {
     private func makeMenu() -> NSMenu {
         let menu = NSMenu()
 
+        let dashboardItem = NSMenuItem(
+            title: L10n.shared["dashboard_title"],
+            action: #selector(openDashboard),
+            keyEquivalent: ""
+        )
+        dashboardItem.target = self
+        menu.addItem(dashboardItem)
+
         let settingsItem = NSMenuItem(
             title: L10n.shared["settings_ellipsis"],
             action: #selector(openSettings),
@@ -74,6 +82,12 @@ final class StatusItemController: NSObject {
         menu.addItem(quitItem)
 
         return menu
+    }
+
+    @objc private func openDashboard() {
+        Task { @MainActor in
+            DashboardWindowController.shared.show()
+        }
     }
 
     @objc private func openSettings() {

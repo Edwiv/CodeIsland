@@ -15,6 +15,7 @@ enum SettingsPage: String, Identifiable, Hashable {
     case remote
     case hooks
     case buddy
+    case lark
     case about
 
     var id: String { rawValue }
@@ -30,6 +31,7 @@ enum SettingsPage: String, Identifiable, Hashable {
         case .remote: return "network"
         case .hooks: return "link.circle.fill"
         case .buddy: return "dot.radiowaves.left.and.right"
+        case .lark: return "paperplane.fill"
         case .about: return "info.circle.fill"
         }
     }
@@ -45,6 +47,7 @@ enum SettingsPage: String, Identifiable, Hashable {
         case .remote: return .mint
         case .hooks: return .purple
         case .buddy: return .red
+        case .lark: return .teal
         case .about: return .cyan
         }
     }
@@ -57,7 +60,7 @@ private struct SidebarGroup: Hashable {
 
 private let sidebarGroups: [SidebarGroup] = [
     SidebarGroup(title: nil, pages: [.general, .behavior, .appearance, .mascots, .sound, .shortcuts]),
-    SidebarGroup(title: "CodeIsland", pages: [.remote, .hooks, .buddy, .about]),
+    SidebarGroup(title: "CodeIsland", pages: [.remote, .hooks, .buddy, .lark, .about]),
 ]
 
 // MARK: - Main View
@@ -97,6 +100,7 @@ struct SettingsView: View {
                 case .remote: RemoteHostsPage()
                 case .hooks: HooksPage()
                 case .buddy: BuddyPage()
+                case .lark: LarkPage()
                 case .about: AboutPage()
                 }
             }
@@ -110,6 +114,7 @@ struct SettingsView: View {
 private struct RemoteHostsPage: View {
     @ObservedObject private var l10n = L10n.shared
     @ObservedObject private var remoteManager = RemoteManager.shared
+    @AppStorage(SettingsKey.remoteEditor) private var remoteEditor = SettingsDefaults.remoteEditor
 
     @State private var name = ""
     @State private var host = ""
@@ -121,6 +126,39 @@ private struct RemoteHostsPage: View {
 
     var body: some View {
         Form {
+            Section {
+                HStack {
+                    Text(l10n["ssh_config_hosts"])
+                    Spacer()
+                    Button(l10n["ssh_config_refresh"]) {
+                        remoteManager.refreshSSHConfigHosts()
+                    }
+                    .buttonStyle(.borderless)
+                }
+                Text(l10n["ssh_config_hosts_desc"])
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if remoteManager.sshConfigHosts.isEmpty {
+                    Text(l10n["ssh_config_empty"])
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(remoteManager.sshConfigHosts) { parsed in
+                        SSHConfigHostRow(parsed: parsed)
+                    }
+                }
+            }
+
+            Section(l10n["remote_editor"]) {
+                Picker(selection: $remoteEditor) {
+                    Text("VS Code").tag("code")
+                    Text("Cursor").tag("cursor")
+                } label: {
+                    Text(l10n["remote_editor"])
+                    Text(l10n["remote_editor_desc"])
+                }
+                .pickerStyle(.segmented)
+            }
+
             Section(l10n["remote_hosts"]) {
                 if remoteManager.hosts.isEmpty {
                     Text(l10n["remote_hosts_empty"])
@@ -256,6 +294,78 @@ private struct RemoteHostRow: View {
     }
 }
 
+/// A host parsed from ~/.ssh/config with per-host auto-connect / auto-resume toggles (R4).
+private struct SSHConfigHostRow: View {
+    @ObservedObject private var l10n = L10n.shared
+    @ObservedObject private var remoteManager = RemoteManager.shared
+    let parsed: ParsedSSHHost
+
+    private var status: SSHForwarder.Status {
+        remoteManager.connectionStatus[parsed.alias] ?? .disconnected
+    }
+
+    private var subtitle: String? {
+        var bits: [String] = []
+        if let u = parsed.user, !u.isEmpty { bits.append(u) }
+        if let h = parsed.hostName, !h.isEmpty { bits.append(h) }
+        return bits.isEmpty ? nil : bits.joined(separator: "@")
+    }
+
+    private var statusDot: Color {
+        switch status {
+        case .connected: return .green
+        case .connecting: return .yellow
+        case .failed: return .red
+        case .disconnected: return .secondary
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Circle().fill(statusDot).frame(width: 7, height: 7)
+                Text(parsed.alias)
+                    .font(.system(size: 13, weight: .medium, design: .monospaced))
+                if let subtitle {
+                    Text(subtitle)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+
+            Toggle(l10n["remote_auto_connect"], isOn: Binding(
+                get: { remoteManager.isAutoConnect(alias: parsed.alias) },
+                set: { remoteManager.setAutoConnect(alias: parsed.alias, enabled: $0) }
+            ))
+            Toggle(l10n["remote_auto_resume"], isOn: Binding(
+                get: { remoteManager.isAutoResume(alias: parsed.alias) },
+                set: { remoteManager.setAutoResume(alias: parsed.alias, enabled: $0) }
+            ))
+
+            if !remoteManager.isConfigured(alias: parsed.alias) {
+                Button(l10n["remote_connect"]) {
+                    remoteManager.connectConfigAlias(parsed.alias)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            } else {
+                HStack(spacing: 8) {
+                    switch status {
+                    case .connected, .connecting:
+                        Button(l10n["remote_disconnect"]) { remoteManager.disconnect(id: parsed.alias) }
+                    default:
+                        Button(l10n["remote_connect"]) { remoteManager.connect(id: parsed.alias) }
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+}
+
 private struct PageHeader: View {
     let title: String
     var body: some View {
@@ -351,6 +461,12 @@ private struct BehaviorPage: View {
     @AppStorage(SettingsKey.pluginSessionMode) private var pluginSessionMode = SettingsDefaults.pluginSessionMode
     @AppStorage(SettingsKey.hapticOnHover) private var hapticOnHover = SettingsDefaults.hapticOnHover
     @AppStorage(SettingsKey.hapticIntensity) private var hapticIntensity = SettingsDefaults.hapticIntensity
+    @AppStorage(SettingsKey.hoverExpandDelayMs) private var hoverExpandDelayMs = SettingsDefaults.hoverExpandDelayMs
+    @AppStorage(SettingsKey.glowRingEnabled) private var glowRingEnabled = SettingsDefaults.glowRingEnabled
+    @AppStorage(SettingsKey.glowIntensityPct) private var glowIntensityPct = SettingsDefaults.glowIntensityPct
+    @AppStorage(SettingsKey.glowRunningIntensityPct) private var glowRunningIntensityPct = SettingsDefaults.glowRunningIntensityPct
+    @AppStorage(SettingsKey.completionDisplaySeconds) private var completionDisplaySeconds = SettingsDefaults.completionDisplaySeconds
+    @AppStorage(SettingsKey.reserveMenuBarWidth) private var reserveMenuBarWidth = SettingsDefaults.reserveMenuBarWidth
     @AppStorage(SettingsKey.sessionTimeout) private var sessionTimeout = SettingsDefaults.sessionTimeout
     @AppStorage(SettingsKey.rotationInterval) private var rotationInterval = SettingsDefaults.rotationInterval
     @AppStorage(SettingsKey.maxToolHistory) private var maxToolHistory = SettingsDefaults.maxToolHistory
@@ -438,6 +554,90 @@ private struct BehaviorPage: View {
                     .pickerStyle(.segmented)
                     .padding(.leading, 84)
                 }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text(l10n["hover_expand_delay"])
+                        Spacer()
+                        Text("\(hoverExpandDelayMs) ms")
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                    }
+                    Slider(value: Binding(
+                        get: { Double(hoverExpandDelayMs) },
+                        set: { hoverExpandDelayMs = Int($0) }
+                    ), in: 0...500, step: 10)
+                    Text(l10n["hover_expand_delay_desc"])
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                BehaviorToggleRow(
+                    title: l10n["glow_ring"],
+                    desc: l10n["glow_ring_desc"],
+                    isOn: $glowRingEnabled,
+                    animation: .smartSuppress
+                )
+
+                if glowRingEnabled {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text(l10n["glow_intensity"])
+                            Spacer()
+                            Text("\(glowIntensityPct)%")
+                                .foregroundStyle(.secondary)
+                                .monospacedDigit()
+                        }
+                        Slider(value: Binding(
+                            get: { Double(glowIntensityPct) },
+                            set: { glowIntensityPct = Int($0) }
+                        ), in: 50...200, step: 10)
+                        Text(l10n["glow_intensity_desc"])
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text(l10n["glow_running_intensity"])
+                            Spacer()
+                            Text("\(glowRunningIntensityPct)%")
+                                .foregroundStyle(.secondary)
+                                .monospacedDigit()
+                        }
+                        Slider(value: Binding(
+                            get: { Double(glowRunningIntensityPct) },
+                            set: { glowRunningIntensityPct = Int($0) }
+                        ), in: 0...200, step: 10)
+                        Text(l10n["glow_running_intensity_desc"])
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text(l10n["completion_display"])
+                        Spacer()
+                        Text("\(completionDisplaySeconds) s")
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                    }
+                    Slider(value: Binding(
+                        get: { Double(completionDisplaySeconds) },
+                        set: { completionDisplaySeconds = Int($0) }
+                    ), in: 2...20, step: 1)
+                    Text(l10n["completion_display_desc"])
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                BehaviorToggleRow(
+                    title: l10n["reserve_menu_bar_width"],
+                    desc: l10n["reserve_menu_bar_width_desc"],
+                    isOn: $reserveMenuBarWidth,
+                    animation: .smartSuppress
+                )
             }
 
             Section(l10n["auto_approve_tools"]) {
@@ -785,6 +985,13 @@ private struct AppearancePage: View {
     @AppStorage(SettingsKey.aiMessageLines) private var aiMessageLines = SettingsDefaults.aiMessageLines
     @AppStorage(SettingsKey.showAgentDetails) private var showAgentDetails = SettingsDefaults.showAgentDetails
     @AppStorage(SettingsKey.showToolStatus) private var showToolStatus = SettingsDefaults.showToolStatus
+    @AppStorage(SettingsKey.chipShowElapsed) private var chipShowElapsed = SettingsDefaults.chipShowElapsed
+    @AppStorage(SettingsKey.chipShowModel) private var chipShowModel = SettingsDefaults.chipShowModel
+    @AppStorage(SettingsKey.chipShowToolCount) private var chipShowToolCount = SettingsDefaults.chipShowToolCount
+    @AppStorage(SettingsKey.chipShowCwd) private var chipShowCwd = SettingsDefaults.chipShowCwd
+    @AppStorage(SettingsKey.chipShowPermissionMode) private var chipShowPermissionMode = SettingsDefaults.chipShowPermissionMode
+    @AppStorage(SettingsKey.chipShowTokens) private var chipShowTokens = SettingsDefaults.chipShowTokens
+    @AppStorage(SettingsKey.chipShowContextWindow) private var chipShowContextWindow = SettingsDefaults.chipShowContextWindow
     @AppStorage(SettingsKey.collapsedWidthScale) private var collapsedWidthScale = SettingsDefaults.collapsedWidthScale
     @AppStorage(SettingsKey.notchHeightMode) private var notchHeightModeRaw = SettingsDefaults.notchHeightMode
     @AppStorage(SettingsKey.customNotchHeight) private var customNotchHeight = SettingsDefaults.customNotchHeight
@@ -872,6 +1079,16 @@ private struct AppearancePage: View {
                 }
                 Toggle(l10n["show_agent_details"], isOn: $showAgentDetails)
                 Toggle(l10n["show_tool_status"], isOn: $showToolStatus)
+            }
+
+            Section(l10n["session_detail_fields"]) {
+                Toggle(l10n["chip_elapsed"], isOn: $chipShowElapsed)
+                Toggle(l10n["chip_model"], isOn: $chipShowModel)
+                Toggle(l10n["chip_tool_count"], isOn: $chipShowToolCount)
+                Toggle(l10n["chip_cwd"], isOn: $chipShowCwd)
+                Toggle(l10n["chip_permission_mode"], isOn: $chipShowPermissionMode)
+                Toggle(l10n["chip_context_window"], isOn: $chipShowContextWindow)
+                Toggle(l10n["chip_tokens"], isOn: $chipShowTokens)
             }
         }
         .formStyle(.grouped)
@@ -974,6 +1191,7 @@ private struct MascotsPage: View {
     @State private var previewStatus: AgentStatus = .processing
     @AppStorage(SettingsKey.mascotSpeed) private var mascotSpeed = SettingsDefaults.mascotSpeed
     @AppStorage(SettingsKey.defaultSource) private var defaultSource = SettingsDefaults.defaultSource
+    @AppStorage(SettingsKey.showMascot) private var showMascot = SettingsDefaults.showMascot
 
     private let mascotList: [(name: String, source: String, desc: String, color: Color)] = [
         ("Clawd", "claude", "Claude Code", Color(red: 0.871, green: 0.533, blue: 0.427)),
@@ -999,6 +1217,17 @@ private struct MascotsPage: View {
 
     var body: some View {
         Form {
+            Section {
+                Toggle(isOn: $showMascot) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(l10n["show_mascot"])
+                        Text(l10n["show_mascot_desc"])
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
             Section {
                 Picker(l10n["preview_status"], selection: $previewStatus) {
                     Text(l10n["processing"]).tag(AgentStatus.processing)
@@ -1231,6 +1460,117 @@ private struct SoundEventRow: View {
     private func clearCustomSound() {
         customPath = ""
         UserDefaults.standard.removeObject(forKey: SettingsKey.soundCustomPath(soundName))
+    }
+}
+
+// MARK: - Lark Page
+
+private struct LarkPage: View {
+    @ObservedObject private var l10n = L10n.shared
+    @ObservedObject private var notifier = LarkNotifier.shared
+    @AppStorage(SettingsKey.larkEnabled) private var enabled = SettingsDefaults.larkEnabled
+    @AppStorage(SettingsKey.larkAppId) private var appId = SettingsDefaults.larkAppId
+    @AppStorage(SettingsKey.larkTargetType) private var targetType = SettingsDefaults.larkTargetType
+    @AppStorage(SettingsKey.larkTargetValue) private var targetValue = SettingsDefaults.larkTargetValue
+    @AppStorage(SettingsKey.larkPushDelaySeconds) private var pushDelay = SettingsDefaults.larkPushDelaySeconds
+    @AppStorage(SettingsKey.larkIncludeQuestions) private var includeQuestions = SettingsDefaults.larkIncludeQuestions
+    @State private var appSecret: String = SettingsManager.shared.larkAppSecret
+
+    private func reconfigure() {
+        SettingsManager.shared.larkAppSecret = appSecret
+        LarkNotifier.shared.configure(
+            enabled: enabled,
+            appId: appId,
+            appSecret: appSecret,
+            targetType: targetType,
+            targetValue: targetValue,
+            pushDelaySeconds: pushDelay,
+            includeQuestions: includeQuestions
+        )
+    }
+
+    private var isReady: Bool {
+        if case .ready = notifier.status { return true }
+        return false
+    }
+
+    private var statusText: String {
+        switch notifier.status {
+        case .disabled:           return l10n["lark_status_disabled"]
+        case .starting:           return l10n["lark_status_starting"]
+        case .ready(let name):    return String(format: l10n["lark_status_ready"], name)
+        case .missingDependency:  return l10n["lark_status_missing_dep"]
+        case .error(let msg):     return String(format: l10n["lark_status_error"], msg)
+        }
+    }
+
+    private var statusColor: Color {
+        switch notifier.status {
+        case .ready:              return .green
+        case .starting:           return .orange
+        case .disabled:           return .secondary
+        case .missingDependency,
+             .error:              return .red
+        }
+    }
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle(isOn: $enabled) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(l10n["lark_enable"])
+                        Text(l10n["lark_enable_desc"]).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                .onChange(of: enabled) { _, _ in reconfigure() }
+            }
+
+            Section(l10n["lark"]) {
+                TextField(l10n["lark_app_id"], text: $appId).onSubmit { reconfigure() }
+                SecureField(l10n["lark_app_secret"], text: $appSecret).onSubmit { reconfigure() }
+                Picker(l10n["lark_target"], selection: $targetType) {
+                    Text(l10n["lark_target_dm"]).tag("dm")
+                    Text(l10n["lark_target_group"]).tag("group")
+                }
+                .onChange(of: targetType) { _, _ in reconfigure() }
+                TextField(
+                    targetType == "group" ? l10n["lark_target_value_group"] : l10n["lark_target_value_dm"],
+                    text: $targetValue
+                ).onSubmit { reconfigure() }
+            }
+
+            Section {
+                Stepper(value: $pushDelay, in: 0...600, step: 5) {
+                    Text("\(l10n["lark_push_delay"]): \(pushDelay)s")
+                }
+                .onChange(of: pushDelay) { _, _ in reconfigure() }
+                Text(l10n["lark_push_delay_desc"]).font(.caption).foregroundStyle(.secondary)
+                Toggle(l10n["lark_include_questions"], isOn: $includeQuestions)
+                    .onChange(of: includeQuestions) { _, _ in reconfigure() }
+                Text(l10n["lark_include_questions_desc"]).font(.caption).foregroundStyle(.secondary)
+            }
+
+            Section(l10n["lark_status"]) {
+                HStack(spacing: 8) {
+                    Circle().fill(statusColor).frame(width: 8, height: 8)
+                    Text(statusText).font(.callout)
+                }
+                if let result = notifier.lastResult {
+                    Text(result.text)
+                        .font(.caption)
+                        .foregroundStyle(result.ok ? .green : .red)
+                        .textSelection(.enabled)
+                }
+                Button(l10n["lark_test"]) {
+                    reconfigure()
+                    LarkNotifier.shared.sendTestCard()
+                }
+                .disabled(!isReady)
+                Text(l10n["lark_setup_hint"]).font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
     }
 }
 
@@ -1496,8 +1836,10 @@ private struct BuddyPage: View {
                         configureAppleCompanion()
                     }
 
+                // Two independent channels, shown separately so it's obvious which one is
+                // missing: LAN (Wi-Fi/AWDL) carries interaction; Bluetooth is view-only.
                 HStack {
-                    Text(l10n["apple_companion_status"])
+                    Text(l10n["apple_companion_channel_lan"])
                     Spacer()
                     Circle()
                         .fill(appleCompanionStatusColor)
@@ -1519,6 +1861,22 @@ private struct BuddyPage: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+
+                HStack {
+                    Text(l10n["apple_companion_channel_ble"])
+                    Spacer()
+                    Circle()
+                        .fill(bleStatusColor)
+                        .frame(width: 8, height: 8)
+                    Text(bleStatusText)
+                        .foregroundStyle(.secondary)
+                        .font(.caption)
+                        .lineLimit(1)
+                }
+
+                Text(l10n["apple_companion_channel_hint"])
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
 
                 HStack {
                     Text(l10n["apple_companion_sync_interval"])
@@ -1599,6 +1957,21 @@ private struct BuddyPage: View {
     private var appleCompanionStatusColor: Color {
         guard appleCompanion.enabled else { return .secondary }
         return appleCompanion.connectedPeerNames.isEmpty ? .orange : .green
+    }
+
+    private var bleStatusText: String {
+        guard appleCompanion.enabled else { return l10n["apple_companion_status_off"] }
+        if appleCompanion.bluetoothSubscribed { return l10n["apple_companion_ble_subscribed"] }
+        if !appleCompanion.bluetoothPoweredOn { return l10n["apple_companion_ble_off"] }
+        if appleCompanion.bluetoothAdvertising { return l10n["apple_companion_ble_advertising"] }
+        return l10n["apple_companion_status_waiting"]
+    }
+
+    private var bleStatusColor: Color {
+        guard appleCompanion.enabled else { return .secondary }
+        if appleCompanion.bluetoothSubscribed { return .green }
+        if !appleCompanion.bluetoothPoweredOn { return .red }
+        return .orange
     }
 }
 

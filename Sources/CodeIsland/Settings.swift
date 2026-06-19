@@ -37,6 +37,21 @@ enum SettingsKey {
     static let hapticOnHover = "hapticOnHover"
     static let hapticIntensity = "hapticIntensity"      // 1=light, 2=medium, 3=strong
     static let sessionTimeout = "sessionTimeout"
+    // Anti-mistouch hover-expand delay, in milliseconds (R3). Default 50ms.
+    static let hoverExpandDelayMs = "hoverExpandDelayMs"
+
+    // Island appearance
+    static let showMascot = "showMascot"                // true = animated pixel mascot, false = minimal app icon
+    static let glowRingEnabled = "glowRingEnabled"       // outer glow ring around the island
+    static let glowIntensityPct = "glowIntensityPct"     // glow brightness for waiting/done, percent (50–200)
+    static let glowRunningIntensityPct = "glowRunningIntensityPct" // glow brightness for the running/working state, percent (0–200)
+    static let reserveMenuBarWidth = "reserveMenuBarWidth" // reserve real menu-bar width so neighbor icons reflow
+    static let completionDisplaySeconds = "completionDisplaySeconds" // how long the completion card stays before auto-collapse
+
+    // Remote
+    static let remoteEditor = "remoteEditor"             // "code" | "cursor" — editor for SSH remote jump
+    static let autoConnectHosts = "autoConnectHosts"     // comma-separated ssh-config aliases to auto-connect
+    static let autoResumeHosts = "autoResumeHosts"       // comma-separated ssh-config aliases to auto-resume
 
     // Display
     static let maxPanelHeight = "maxPanelHeight"
@@ -46,6 +61,15 @@ enum SettingsKey {
     static let showAgentDetails = "showAgentDetails"
     static let notchHeightMode = "notchHeightMode"
     static let customNotchHeight = "customNotchHeight"
+
+    // Expanded session row: which detail chips to show (#5)
+    static let chipShowElapsed = "chipShowElapsed"
+    static let chipShowModel = "chipShowModel"
+    static let chipShowToolCount = "chipShowToolCount"
+    static let chipShowCwd = "chipShowCwd"
+    static let chipShowPermissionMode = "chipShowPermissionMode"
+    static let chipShowTokens = "chipShowTokens"
+    static let chipShowContextWindow = "chipShowContextWindow"
 
     // Sound
     static let soundEnabled = "soundEnabled"
@@ -108,6 +132,17 @@ enum SettingsKey {
     static let webhookEnabled = "webhookEnabled"
     static let webhookURL = "webhookURL"
     static let webhookEventFilter = "webhookEventFilter"  // comma-separated allow-list; empty = forward all
+
+    // Lark (Feishu) bot push: when a confirmation stays unanswered on the desktop for
+    // longer than the push delay, forward it to the user's self-built Lark bot so they
+    // can approve/deny/answer from their phone.
+    static let larkEnabled = "larkEnabled"
+    static let larkAppId = "larkAppId"
+    static let larkAppSecret = "larkAppSecret"
+    static let larkTargetType = "larkTargetType"        // "dm" (email/user_id) | "group" (chat_id)
+    static let larkTargetValue = "larkTargetValue"
+    static let larkPushDelaySeconds = "larkPushDelaySeconds"
+    static let larkIncludeQuestions = "larkIncludeQuestions"
 }
 
 struct SettingsDefaults {
@@ -124,6 +159,18 @@ struct SettingsDefaults {
     static let hapticOnHover = false
     static let hapticIntensity = 1          // 1=light
     static let sessionTimeout = 30
+    static let hoverExpandDelayMs = 50
+
+    static let showMascot = true
+    static let glowRingEnabled = true
+    static let glowIntensityPct = 130
+    static let glowRunningIntensityPct = 100
+    static let reserveMenuBarWidth = true
+    static let completionDisplaySeconds = 7
+
+    static let remoteEditor = "code"
+    static let autoConnectHosts = ""
+    static let autoResumeHosts = ""
 
     static let maxPanelHeight = 560
     static let maxVisibleSessions = 5
@@ -132,6 +179,15 @@ struct SettingsDefaults {
     static let showAgentDetails = false
     static let notchHeightMode = NotchHeightMode.matchNotch.rawValue
     static let customNotchHeight = 37.0
+
+    // Detail chips: only elapsed runtime is on by default (preserves current behavior).
+    static let chipShowElapsed = true
+    static let chipShowModel = false
+    static let chipShowToolCount = false
+    static let chipShowCwd = false
+    static let chipShowPermissionMode = false
+    static let chipShowTokens = false
+    static let chipShowContextWindow = false
 
     static let soundEnabled = false
     static let soundVolume = 50
@@ -177,6 +233,13 @@ struct SettingsDefaults {
     static let webhookEnabled = false
     static let webhookURL = ""
     static let webhookEventFilter = ""
+
+    static let larkEnabled = false
+    static let larkAppId = ""
+    static let larkTargetType = "dm"
+    static let larkTargetValue = ""
+    static let larkPushDelaySeconds = 30
+    static let larkIncludeQuestions = true
 }
 
 @MainActor
@@ -200,6 +263,16 @@ class SettingsManager {
             SettingsKey.hapticOnHover: SettingsDefaults.hapticOnHover,
             SettingsKey.hapticIntensity: SettingsDefaults.hapticIntensity,
             SettingsKey.sessionTimeout: SettingsDefaults.sessionTimeout,
+            SettingsKey.hoverExpandDelayMs: SettingsDefaults.hoverExpandDelayMs,
+            SettingsKey.showMascot: SettingsDefaults.showMascot,
+            SettingsKey.glowRingEnabled: SettingsDefaults.glowRingEnabled,
+            SettingsKey.glowIntensityPct: SettingsDefaults.glowIntensityPct,
+            SettingsKey.glowRunningIntensityPct: SettingsDefaults.glowRunningIntensityPct,
+            SettingsKey.reserveMenuBarWidth: SettingsDefaults.reserveMenuBarWidth,
+            SettingsKey.completionDisplaySeconds: SettingsDefaults.completionDisplaySeconds,
+            SettingsKey.remoteEditor: SettingsDefaults.remoteEditor,
+            SettingsKey.autoConnectHosts: SettingsDefaults.autoConnectHosts,
+            SettingsKey.autoResumeHosts: SettingsDefaults.autoResumeHosts,
             SettingsKey.maxPanelHeight: SettingsDefaults.maxPanelHeight,
             SettingsKey.maxVisibleSessions: SettingsDefaults.maxVisibleSessions,
             SettingsKey.contentFontSize: SettingsDefaults.contentFontSize,
@@ -207,6 +280,13 @@ class SettingsManager {
             SettingsKey.showAgentDetails: SettingsDefaults.showAgentDetails,
             SettingsKey.notchHeightMode: SettingsDefaults.notchHeightMode,
             SettingsKey.customNotchHeight: SettingsDefaults.customNotchHeight,
+            SettingsKey.chipShowElapsed: SettingsDefaults.chipShowElapsed,
+            SettingsKey.chipShowModel: SettingsDefaults.chipShowModel,
+            SettingsKey.chipShowToolCount: SettingsDefaults.chipShowToolCount,
+            SettingsKey.chipShowCwd: SettingsDefaults.chipShowCwd,
+            SettingsKey.chipShowPermissionMode: SettingsDefaults.chipShowPermissionMode,
+            SettingsKey.chipShowTokens: SettingsDefaults.chipShowTokens,
+            SettingsKey.chipShowContextWindow: SettingsDefaults.chipShowContextWindow,
             SettingsKey.soundEnabled: SettingsDefaults.soundEnabled,
             SettingsKey.soundVolume: SettingsDefaults.soundVolume,
             SettingsKey.soundSessionStart: SettingsDefaults.soundSessionStart,
@@ -235,6 +315,12 @@ class SettingsManager {
             SettingsKey.webhookEnabled: SettingsDefaults.webhookEnabled,
             SettingsKey.webhookURL: SettingsDefaults.webhookURL,
             SettingsKey.webhookEventFilter: SettingsDefaults.webhookEventFilter,
+            SettingsKey.larkEnabled: SettingsDefaults.larkEnabled,
+            SettingsKey.larkAppId: SettingsDefaults.larkAppId,
+            SettingsKey.larkTargetType: SettingsDefaults.larkTargetType,
+            SettingsKey.larkTargetValue: SettingsDefaults.larkTargetValue,
+            SettingsKey.larkPushDelaySeconds: SettingsDefaults.larkPushDelaySeconds,
+            SettingsKey.larkIncludeQuestions: SettingsDefaults.larkIncludeQuestions,
         ])
     }
 
@@ -370,6 +456,113 @@ class SettingsManager {
         set {
             defaults.set(newValue.sorted().joined(separator: ","), forKey: SettingsKey.autoApproveTools)
         }
+    }
+
+    // MARK: - Island appearance
+
+    var showMascot: Bool {
+        get { defaults.object(forKey: SettingsKey.showMascot) == nil ? SettingsDefaults.showMascot : defaults.bool(forKey: SettingsKey.showMascot) }
+        set { defaults.set(newValue, forKey: SettingsKey.showMascot) }
+    }
+
+    var glowRingEnabled: Bool {
+        get { defaults.object(forKey: SettingsKey.glowRingEnabled) == nil ? SettingsDefaults.glowRingEnabled : defaults.bool(forKey: SettingsKey.glowRingEnabled) }
+        set { defaults.set(newValue, forKey: SettingsKey.glowRingEnabled) }
+    }
+
+    /// Glow ring brightness, percent. 100 = baseline; clamped to 50…200.
+    var glowIntensityPct: Int {
+        get { defaults.object(forKey: SettingsKey.glowIntensityPct) == nil ? SettingsDefaults.glowIntensityPct : defaults.integer(forKey: SettingsKey.glowIntensityPct) }
+        set { defaults.set(min(200, max(50, newValue)), forKey: SettingsKey.glowIntensityPct) }
+    }
+
+    /// Glow brightness for the running/working (blue) state, percent. 0 hides it; clamped to 0…200.
+    var glowRunningIntensityPct: Int {
+        get { defaults.object(forKey: SettingsKey.glowRunningIntensityPct) == nil ? SettingsDefaults.glowRunningIntensityPct : defaults.integer(forKey: SettingsKey.glowRunningIntensityPct) }
+        set { defaults.set(min(200, max(0, newValue)), forKey: SettingsKey.glowRunningIntensityPct) }
+    }
+
+    /// How long the green "done" completion card stays before auto-collapse, in seconds (clamped 2…20).
+    var completionDisplaySeconds: Int {
+        get { defaults.object(forKey: SettingsKey.completionDisplaySeconds) == nil ? SettingsDefaults.completionDisplaySeconds : defaults.integer(forKey: SettingsKey.completionDisplaySeconds) }
+        set { defaults.set(min(20, max(2, newValue)), forKey: SettingsKey.completionDisplaySeconds) }
+    }
+
+    var reserveMenuBarWidth: Bool {
+        get { defaults.object(forKey: SettingsKey.reserveMenuBarWidth) == nil ? SettingsDefaults.reserveMenuBarWidth : defaults.bool(forKey: SettingsKey.reserveMenuBarWidth) }
+        set { defaults.set(newValue, forKey: SettingsKey.reserveMenuBarWidth) }
+    }
+
+    var hoverExpandDelayMs: Int {
+        get { defaults.object(forKey: SettingsKey.hoverExpandDelayMs) == nil ? SettingsDefaults.hoverExpandDelayMs : defaults.integer(forKey: SettingsKey.hoverExpandDelayMs) }
+        set { defaults.set(newValue, forKey: SettingsKey.hoverExpandDelayMs) }
+    }
+
+    // MARK: - Lark (Feishu) bot push
+
+    var larkEnabled: Bool {
+        get { defaults.bool(forKey: SettingsKey.larkEnabled) }
+        set { defaults.set(newValue, forKey: SettingsKey.larkEnabled) }
+    }
+
+    var larkAppId: String {
+        get { defaults.string(forKey: SettingsKey.larkAppId) ?? SettingsDefaults.larkAppId }
+        set { defaults.set(newValue, forKey: SettingsKey.larkAppId) }
+    }
+
+    var larkTargetType: String {
+        get { defaults.string(forKey: SettingsKey.larkTargetType) ?? SettingsDefaults.larkTargetType }
+        set { defaults.set(newValue, forKey: SettingsKey.larkTargetType) }
+    }
+
+    var larkTargetValue: String {
+        get { defaults.string(forKey: SettingsKey.larkTargetValue) ?? SettingsDefaults.larkTargetValue }
+        set { defaults.set(newValue, forKey: SettingsKey.larkTargetValue) }
+    }
+
+    /// Seconds the desktop waits, after a confirmation is enqueued and still unanswered,
+    /// before pushing it to Lark. Clamped to 0–600.
+    var larkPushDelaySeconds: Int {
+        get { defaults.object(forKey: SettingsKey.larkPushDelaySeconds) == nil ? SettingsDefaults.larkPushDelaySeconds : defaults.integer(forKey: SettingsKey.larkPushDelaySeconds) }
+        set { defaults.set(min(600, max(0, newValue)), forKey: SettingsKey.larkPushDelaySeconds) }
+    }
+
+    var larkIncludeQuestions: Bool {
+        get { defaults.object(forKey: SettingsKey.larkIncludeQuestions) == nil ? SettingsDefaults.larkIncludeQuestions : defaults.bool(forKey: SettingsKey.larkIncludeQuestions) }
+        set { defaults.set(newValue, forKey: SettingsKey.larkIncludeQuestions) }
+    }
+
+    /// App Secret. Stored in UserDefaults like the rest of the config: a Keychain item would
+    /// be orphaned every time the (ad-hoc-signed) app is re-signed, silently breaking auto-start
+    /// on launch. This is the user's own machine and matches how all other settings are stored.
+    var larkAppSecret: String {
+        get { defaults.string(forKey: SettingsKey.larkAppSecret) ?? "" }
+        set { defaults.set(newValue, forKey: SettingsKey.larkAppSecret) }
+    }
+
+    // MARK: - Remote
+
+    var remoteEditor: String {
+        get { defaults.string(forKey: SettingsKey.remoteEditor) ?? SettingsDefaults.remoteEditor }
+        set { defaults.set(newValue, forKey: SettingsKey.remoteEditor) }
+    }
+
+    /// SSH-config aliases the user opted into auto-connecting at startup (R4).
+    var autoConnectHosts: Set<String> {
+        get {
+            let raw = defaults.string(forKey: SettingsKey.autoConnectHosts) ?? SettingsDefaults.autoConnectHosts
+            return Set(raw.split(separator: ",").map(String.init))
+        }
+        set { defaults.set(newValue.sorted().joined(separator: ","), forKey: SettingsKey.autoConnectHosts) }
+    }
+
+    /// SSH-config aliases the user opted into auto-resuming discovered sessions for (R4).
+    var autoResumeHosts: Set<String> {
+        get {
+            let raw = defaults.string(forKey: SettingsKey.autoResumeHosts) ?? SettingsDefaults.autoResumeHosts
+            return Set(raw.split(separator: ",").map(String.init))
+        }
+        set { defaults.set(newValue.sorted().joined(separator: ","), forKey: SettingsKey.autoResumeHosts) }
     }
 
     /// Comma-separated list of substrings; any hook event whose `cwd` contains

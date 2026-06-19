@@ -69,7 +69,13 @@ struct TerminalActivator {
     ]
 
     static func activate(session: SessionSnapshot, sessionId: String? = nil) {
-        guard !session.isRemote else { return }
+        // Remote sessions can't be focused locally — open them in VS Code / Cursor
+        // Remote-SSH instead of no-opping (R10). RemoteJumpService reads @MainActor
+        // singletons, so hop to the main actor.
+        if session.isRemote {
+            Task { @MainActor in RemoteJumpService.jump(session: session) }
+            return
+        }
 
         // Native app by bundle ID (e.g. Codex APP vs Codex CLI). These are IDE-style
         // apps (Cursor, Trae, Qoder, Factory, …) that can hold several workspace

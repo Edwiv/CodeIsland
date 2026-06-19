@@ -23,6 +23,14 @@ struct NotchPanelView: View {
     @AppStorage(SettingsKey.collapsedWidthScale) private var collapsedWidthScale = SettingsDefaults.collapsedWidthScale
     @AppStorage(SettingsKey.hapticOnHover) private var hapticOnHover = SettingsDefaults.hapticOnHover
     @AppStorage(SettingsKey.hapticIntensity) private var hapticIntensity = SettingsDefaults.hapticIntensity
+    /// Anti-mistouch hover-expand delay (ms). Default 50ms, configurable in Settings (R3).
+    @AppStorage(SettingsKey.hoverExpandDelayMs) private var hoverExpandDelayMs = SettingsDefaults.hoverExpandDelayMs
+    @AppStorage(SettingsKey.glowRingEnabled) private var glowRingEnabled = SettingsDefaults.glowRingEnabled
+    @AppStorage(SettingsKey.glowIntensityPct) private var glowIntensityPct = SettingsDefaults.glowIntensityPct
+    @AppStorage(SettingsKey.glowRunningIntensityPct) private var glowRunningIntensityPct = SettingsDefaults.glowRunningIntensityPct
+    /// When the animated mascot is off, the left wing shows a live-activity label that needs
+    /// more horizontal room than the fixed-width icon — used by `panelWidth` to reserve it.
+    @AppStorage(SettingsKey.showMascot) private var showMascot = SettingsDefaults.showMascot
 
     /// Delayed hover: prevents accidental expansion when mouse passes through
     @State private var hoverTimer: Timer?
@@ -72,7 +80,11 @@ struct NotchPanelView: View {
         let extra: CGFloat = appState.status == .idle ? 0 : 20
         // Reserve space for tool status — proportional to screen width
         let toolExtra: CGFloat = displayedToolStatus ? (hasNotch ? screenWidth * 0.03 : screenWidth * 0.04) : 0
-        return nw + wing * 2 + extra + toolExtra
+        // When the mascot is off, the left wing renders an always-on activity label
+        // (running tool / Thinking / agent name) instead of the fixed-width icon — reserve
+        // room so it isn't clipped behind the notch.
+        let activityExtra: CGFloat = showMascot ? 0 : 80
+        return nw + wing * 2 + extra + toolExtra + activityExtra
     }
 
     var body: some View {
@@ -169,10 +181,14 @@ struct NotchPanelView: View {
                         }
                     case .completionCard:
                         SessionListView(appState: appState, onlySessionId: appState.justCompletedSessionId)
-                            .transition(.blurFade.combined(with: .move(edge: .top)))
+                            .transition(.opacity.combined(with: .move(edge: .top)))
                     case .sessionList:
                         SessionListView(appState: appState, onlySessionId: nil)
-                            .transition(.blurFade.combined(with: .move(edge: .top)))
+                            // Opacity+move (NOT blurFade): the session list can be tall with many
+                            // cards, and animating .blur(radius:) over the whole subtree forces a
+                            // full re-rasterization every frame — the open/close jank with many
+                            // sessions (#4). Opacity is a compositor property; move is a transform.
+                            .transition(.opacity.combined(with: .move(edge: .top)))
                     case .collapsed:
                         EmptyView()
                     }
@@ -181,12 +197,19 @@ struct NotchPanelView: View {
             .frame(width: panelWidth)
             .clipped()
             .background(
-                NotchPanelShape(
-                    topExtension: shouldShowExpanded ? 14 : 3,
-                    bottomRadius: shouldShowExpanded ? 24 : 12,
-                    minHeight: notchHeight
+                IslandGlowBackground(
+                    shape: NotchPanelShape(
+                        topExtension: shouldShowExpanded ? 14 : 3,
+                        bottomRadius: shouldShowExpanded ? 24 : 12,
+                        minHeight: notchHeight
+                    ),
+                    status: appState.status,
+                    doneNonce: appState.doneFlashNonce,
+                    enabled: glowRingEnabled,
+                    completing: appState.justCompletedSessionId != nil,
+                    intensity: Double(glowIntensityPct) / 100.0,
+                    runningIntensity: Double(glowRunningIntensityPct) / 100.0
                 )
-                .fill(.black)
             )
             .offset(y: curtainOffset)
             .opacity(curtainOpacity)
@@ -260,9 +283,10 @@ struct NotchPanelView: View {
 
                 isHovered = hovering
                 if hovering {
-                    // Delay expansion to avoid accidental triggers
+                    // Delay expansion to avoid accidental triggers (configurable, default 50ms)
                     hoverTimer?.invalidate()
-                    hoverTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: false) { _ in
+                    let expandDelay = max(0, Double(hoverExpandDelayMs)) / 1000.0
+                    hoverTimer = Timer.scheduledTimer(withTimeInterval: expandDelay, repeats: false) { _ in
                         Task { @MainActor in
                             // Guard: mouse may have left during the delay
                             guard isHovered else { return }
@@ -325,6 +349,9 @@ private struct CompactLeftWing: View {
     // Bound via @AppStorage so flipping the default mascot in Settings rerenders this view
     // even when AppState.primarySource wasn't recomputed (no session mutations in flight).
     @AppStorage(SettingsKey.defaultSource) private var settingsDefaultSource = SettingsDefaults.defaultSource
+    /// When off, the wing shows a live-activity label (tool / Thinking / agent name) instead
+    /// of the static per-app icon, kept always visible with the shimmering sweep.
+    @AppStorage(SettingsKey.showMascot) private var showMascot = SettingsDefaults.showMascot
 
     private var displaySession: SessionSnapshot? {
         let sid = appState.rotatingSessionId ?? appState.activeSessionId ?? appState.sessions.keys.sorted().first
@@ -341,16 +368,31 @@ private struct CompactLeftWing: View {
     }
     private var displayStatus: AgentStatus { displaySession?.status ?? .idle }
     private var liveTool: String? { displaySession?.currentTool }
+    /// Friendly agent name for the idle-state activity label (mascot off). Prefer the live
+    /// session's own label so custom-named sources are honored; fall back to the catalog.
+    private var agentName: String {
+        if let session = displaySession { return session.sourceLabel }
+        return AgentCatalog.displayName(for: displaySource)
+    }
     @State private var shownTool: String?
     @State private var lingerTimer: Timer?
+
+    /// Grouping tabs for the expanded header. "MAC" (group-by-machine) only appears
+    /// when at least one remote session exists, since it's pointless when everything is local.
+    private var groupingTabs: [(String, String)] {
+        var tabs: [(String, String)] = [("all", "ALL"), ("status", "STA"), ("cli", "CLI")]
+        if appState.sessions.values.contains(where: { $0.isRemote }) {
+            tabs.append(("machine", "MAC"))
+        }
+        return tabs
+    }
 
     var body: some View {
         HStack(spacing: 6) {
             if expanded {
-                AppLogoView(size: 36, showBackground: false)
                 if appState.sessions.count > 1 {
                     HStack(spacing: 1) {
-                        ForEach([("all", "ALL"), ("status", "STA"), ("cli", "CLI")], id: \.0) { tag, label in
+                        ForEach(groupingTabs, id: \.0) { tag, label in
                             let selected = groupingMode == tag
                             Button {
                                 withAnimation(.easeInOut(duration: 0.15)) { groupingMode = tag }
@@ -373,19 +415,33 @@ private struct CompactLeftWing: View {
                     .overlay(Rectangle().stroke(.white.opacity(0.1), lineWidth: 1))
                 }
             } else {
-                MascotView(source: displaySource, status: displayStatus, size: mascotSize)
-                    .id(displaySource)
-                    .transition(.opacity)
-                    .animation(.easeInOut(duration: 0.3), value: displaySource)
-
-                // On notch screens, show tool name only (no description, space is tight)
-                if hasNotch, showToolStatus, let tool = shownTool {
-                    Text(tool)
-                        .font(.system(size: 10, weight: .medium, design: .monospaced))
-                        .foregroundStyle(toolStatusColor(tool))
-                        .lineLimit(1)
-                        .fixedSize()
+                if showMascot {
+                    MascotView(source: displaySource, status: displayStatus, size: mascotSize)
+                        .id(displaySource)
                         .transition(.opacity)
+                        .animation(.easeInOut(duration: 0.3), value: displaySource)
+
+                    // On notch screens, show tool name only (no description, space is tight)
+                    if hasNotch, showToolStatus, let tool = shownTool {
+                        Text(tool)
+                            .font(.system(size: 10, weight: .medium, design: .monospaced))
+                            .foregroundStyle(toolStatusColor(tool))
+                            .lineLimit(1)
+                            .fixedSize()
+                            .transition(.opacity)
+                    }
+                } else {
+                    // Mascot off: replace the static icon with an always-on readout of what
+                    // the agent is doing right now (running tool / Thinking / agent name when
+                    // idle), keeping the left-to-right shimmer for active states.
+                    MascotActivityLabel(
+                        source: displaySource,
+                        agentName: agentName,
+                        status: displayStatus,
+                        tool: liveTool,
+                        height: mascotSize
+                    )
+                    .animation(.easeInOut(duration: 0.25), value: displayStatus)
                 }
             }
         }
@@ -434,6 +490,9 @@ private struct CompactRightWing: View {
             if expanded {
                 NotchIconButton(icon: soundEnabled ? "speaker.wave.2" : "speaker.slash", tooltip: soundEnabled ? l10n["mute"] : l10n["enable_sound_tooltip"]) {
                     soundEnabled.toggle()
+                }
+                NotchIconButton(icon: "square.grid.2x2", tooltip: l10n["dashboard_title"]) {
+                    DashboardWindowController.shared.show()
                 }
                 NotchIconButton(icon: "gearshape", tooltip: l10n["settings"]) {
                     SettingsWindowController.shared.show()
@@ -498,6 +557,93 @@ private func toolStatusColor(_ tool: String) -> Color {
     case "grep", "glob": return Color(red: 0.8, green: 0.6, blue: 1.0)
     case "agent": return Color(red: 1.0, green: 0.6, blue: 0.4)
     default: return .white.opacity(0.7)
+    }
+}
+
+// MARK: - Mascot Activity Label (left wing, mascot disabled)
+
+/// Shown on the left wing in place of the static per-app icon when the animated mascot is
+/// turned off: a compact, always-present readout of what the agent is doing right now — the
+/// running tool (Bash/Read/…), "Thinking" between tools, or the agent's name when idle.
+/// Active states keep the left-to-right shimmer (`TypingIndicator`); idle is a steady, dim
+/// brand-colored name. Unlike the transient tool badge it never lingers-then-disappears: it
+/// always reflects the live state.
+private struct MascotActivityLabel: View {
+    let source: String
+    let agentName: String
+    let status: AgentStatus
+    let tool: String?
+    let height: CGFloat
+
+    private var brand: Color { AgentCatalog.brandColor(source: source) }
+
+    /// (text, color, animated) — `animated` drives the shimmer (active states only).
+    private var activity: (text: String, color: Color, animated: Bool) {
+        if let tool, !tool.isEmpty {
+            return (tool, toolStatusColor(tool), true)
+        }
+        switch status {
+        case .running, .processing:
+            return (L10n.shared["activity_thinking"], Color(red: 0.4, green: 1.0, blue: 0.5), true)
+        case .waitingApproval, .waitingQuestion:
+            return (L10n.shared["activity_thinking"], Color(red: 1.0, green: 0.7, blue: 0.28), true)
+        case .idle:
+            return (agentName, brand.opacity(0.85), false)
+        }
+    }
+
+    var body: some View {
+        let a = activity
+        HStack(spacing: 5) {
+            // Status LED: pulses while the agent is working, steady-dim when idle. Reuses the
+            // activity color so it reads as "this is what's happening right now".
+            ActivityDot(color: a.color, active: a.animated, size: 5)
+            Group {
+                if a.animated {
+                    TypingIndicator(fontSize: 11, label: a.text, bright: true, color: a.color)
+                } else {
+                    Text(a.text)
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .foregroundStyle(a.color)
+                }
+            }
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .frame(maxWidth: 92, alignment: .leading)
+        }
+        .frame(height: height)
+    }
+}
+
+/// A small status LED rendered before the activity text. It breathes (scale + opacity +
+/// glow) while the agent is working and sits steady-dim when idle, giving the otherwise
+/// plain label a live "pulse" without competing with the shimmering text.
+private struct ActivityDot: View {
+    let color: Color
+    let active: Bool
+    var size: CGFloat = 5
+    @State private var pulse = false
+
+    var body: some View {
+        Circle()
+            .fill(color)
+            .frame(width: size, height: size)
+            .scaleEffect(active ? (pulse ? 1.0 : 0.66) : 0.82)
+            .opacity(active ? (pulse ? 1.0 : 0.4) : 0.55)
+            .shadow(color: active ? color.opacity(0.85) : .clear, radius: active ? (pulse ? 3.5 : 1) : 0)
+            .onAppear { restart() }
+            .onChange(of: active) { _, _ in restart() }
+    }
+
+    private func restart() {
+        if active {
+            pulse = false
+            withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) {
+                pulse = true
+            }
+        } else {
+            withAnimation(.easeOut(duration: 0.2)) { pulse = false }
+        }
     }
 }
 
@@ -1613,6 +1759,32 @@ private struct SessionListView: View {
             }
             return result
 
+        case "machine":
+            // Group by machine: local first, then remote hosts sorted by display name (R7).
+            var byKey: [String: (label: String, ids: [String])] = [:]
+            var order: [String] = []
+            for id in sorted {
+                guard let session = appState.sessions[id] else { continue }
+                let group = AgentCatalog.machineGroup(for: session)
+                if byKey[group.key] == nil {
+                    byKey[group.key] = (group.label, [])
+                    order.append(group.key)
+                }
+                byKey[group.key]?.ids.append(id)
+            }
+            // Local machine first, remaining hosts alphabetically by label for stability.
+            let sortedKeys = order.sorted { a, b in
+                if a == AgentCatalog.localMachineKey { return true }
+                if b == AgentCatalog.localMachineKey { return false }
+                let la = byKey[a]?.label ?? a
+                let lb = byKey[b]?.label ?? b
+                return la.localizedCaseInsensitiveCompare(lb) == .orderedAscending
+            }
+            return sortedKeys.compactMap { key in
+                guard let entry = byKey[key] else { return nil }
+                return ("\(entry.label) (\(entry.ids.count))", nil, entry.ids)
+            }
+
         default: // "all"
             return [("", nil, sorted)]
         }
@@ -1898,6 +2070,14 @@ private struct SessionCard: View {
     @AppStorage(SettingsKey.aiMessageLines) private var aiMessageLines = SettingsDefaults.aiMessageLines
     @AppStorage(SettingsKey.showAgentDetails) private var showAgentDetails = SettingsDefaults.showAgentDetails
     @AppStorage(SettingsKey.autoCollapseAfterSessionJump) private var autoCollapseAfterSessionJump = SettingsDefaults.autoCollapseAfterSessionJump
+    // Configurable detail chips (#5)
+    @AppStorage(SettingsKey.chipShowElapsed) private var chipShowElapsed = SettingsDefaults.chipShowElapsed
+    @AppStorage(SettingsKey.chipShowModel) private var chipShowModel = SettingsDefaults.chipShowModel
+    @AppStorage(SettingsKey.chipShowToolCount) private var chipShowToolCount = SettingsDefaults.chipShowToolCount
+    @AppStorage(SettingsKey.chipShowCwd) private var chipShowCwd = SettingsDefaults.chipShowCwd
+    @AppStorage(SettingsKey.chipShowPermissionMode) private var chipShowPermissionMode = SettingsDefaults.chipShowPermissionMode
+    @AppStorage(SettingsKey.chipShowTokens) private var chipShowTokens = SettingsDefaults.chipShowTokens
+    @AppStorage(SettingsKey.chipShowContextWindow) private var chipShowContextWindow = SettingsDefaults.chipShowContextWindow
     private var fontSize: CGFloat { CGFloat(contentFontSize) }
     private var aiLineLimit: Int? { aiMessageLines > 0 ? aiMessageLines : nil }
     private var approvalQueueIndex: Int? {
@@ -1983,9 +2163,8 @@ private struct SessionCard: View {
                     Spacer(minLength: 8)
 
                     HStack(spacing: 4) {
-                        if let remote = session.remoteDisplayName {
-                            SessionTag("@\(remote)", color: Color(red: 0.45, green: 0.72, blue: 1.0))
-                        }
+                        // Remote host is already shown by TerminalBadge (green network badge),
+                        // so the separate "@host" tag would be redundant for remote sessions.
                         if !session.subagents.isEmpty {
                             SessionTag("+\(session.subagents.count) Sub", color: Color(red: 0.65, green: 0.55, blue: 0.95))
                         }
@@ -1995,7 +2174,36 @@ private struct SessionCard: View {
                         if session.isYoloMode == true {
                             SessionTag("YOLO", color: Color(red: 1.0, green: 0.35, blue: 0.35))
                         }
-                        SessionTag(timeAgo(session.startTime))
+                        // Configurable detail chips (#5). Fixed order; each gated by its
+                        // Settings toggle, all reusing the SessionTag chip style so they
+                        // match the elapsed-runtime indicator.
+                        if chipShowModel, let m = session.shortModelName {
+                            SessionTag(m, color: Color(red: 0.55, green: 0.75, blue: 0.95))
+                        }
+                        if chipShowToolCount, session.totalToolCallCount > 0 {
+                            SessionTag("\(session.totalToolCallCount) tools")
+                        }
+                        if chipShowCwd, let folder = session.cwd.map({ ($0 as NSString).lastPathComponent }), !folder.isEmpty {
+                            SessionTag(folder, color: .white.opacity(0.6))
+                        }
+                        if chipShowPermissionMode, let mode = session.permissionMode, !mode.isEmpty {
+                            SessionTag(mode, color: Color(red: 0.8, green: 0.7, blue: 0.55))
+                        }
+                        if chipShowContextWindow, let used = session.contextTokensUsed {
+                            if let pct = session.contextWindowPercent {
+                                SessionTag("\(pct)% ctx", color: Color(red: 0.6, green: 0.85, blue: 0.7))
+                            } else {
+                                SessionTag("\(SessionSnapshot.compactTokens(used)) ctx", color: Color(red: 0.6, green: 0.85, blue: 0.7))
+                            }
+                        }
+                        if chipShowTokens, session.lastInputTokens != nil || session.lastOutputTokens != nil {
+                            let inTok = SessionSnapshot.compactTokens(session.lastInputTokens ?? 0)
+                            let outTok = SessionSnapshot.compactTokens(session.lastOutputTokens ?? 0)
+                            SessionTag("\(inTok)↑ \(outTok)↓", color: Color(red: 0.7, green: 0.7, blue: 0.85))
+                        }
+                        if chipShowElapsed {
+                            SessionTag(timeAgo(session.startTime))
+                        }
                         TerminalBadge(session: session)
                     }
                 }
@@ -2410,16 +2618,42 @@ private struct TerminalBadge: View {
         "codex": "com.openai.codex",
         "opencode": "ai.opencode.desktop",
     ]
+    /// Fallback map from the displayed terminal name to a bundle id, so the icon still
+    /// resolves when the hook didn't capture `__CFBundleIdentifier` (only Warp reliably
+    /// exports it). Keys are lowercased `terminalName` values (see SessionSnapshot).
+    private static let terminalNameBundleIds: [String: String] = [
+        "cmux": "com.cmuxterm.app",
+        "ghostty": "com.mitchellh.ghostty",
+        "iterm2": "com.googlecode.iterm2",
+        "wezterm": "com.github.wez.wezterm",
+        "kaku": "fun.tw93.kaku",
+        "kitty": "net.kovidgoyal.kitty",
+        "alacritty": "org.alacritty",
+        "warp": "dev.warp.Warp-Stable",
+        "terminal": "com.apple.Terminal",
+        "vs code": "com.microsoft.VSCode",
+        "trae": "com.trae.app",
+        "zed": "dev.zed.Zed",
+        "xcode": "com.apple.dt.Xcode",
+    ]
     private static var termIconCache: [String: NSImage] = [:]
 
     private var termIcon: NSImage? {
-        let bid = session.termBundleId ?? Self.sourceBundleIds[session.source]
-        guard let bid else { return nil }
-        if let cached = Self.termIconCache[bid] { return cached }
-        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bid) else { return nil }
-        let icon = NSWorkspace.shared.icon(forFile: url.path)
-        Self.termIconCache[bid] = icon
-        return icon
+        // Try the precise bundle id first, then the source's desktop app, then a
+        // name-based fallback. First candidate that resolves to an installed app wins.
+        let candidates: [String] = [
+            session.termBundleId,
+            Self.sourceBundleIds[session.source],
+            session.terminalName.flatMap { Self.terminalNameBundleIds[$0.lowercased()] },
+        ].compactMap { $0 }
+        for bid in candidates {
+            if let cached = Self.termIconCache[bid] { return cached }
+            guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bid) else { continue }
+            let icon = NSWorkspace.shared.icon(forFile: url.path)
+            Self.termIconCache[bid] = icon
+            return icon
+        }
+        return nil
     }
 
     private let remoteColor = Color(red: 0.3, green: 0.75, blue: 0.5)

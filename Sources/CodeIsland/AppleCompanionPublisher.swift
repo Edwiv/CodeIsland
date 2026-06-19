@@ -1,6 +1,7 @@
 import Combine
 import Foundation
 import MultipeerConnectivity
+import Network
 import os
 import CodeIslandCore
 
@@ -33,8 +34,27 @@ final class AppleCompanionPublisher: NSObject, ObservableObject {
         serviceType: Self.serviceType
     )
     private var heartbeatTimer: Timer?
-    private var sequence: UInt64 = 0
+    private static let sequenceDefaultsKey = "AppleCompanion.lastSequence"
+    /// Monotonic across app restarts (persisted): the phone drops any packet whose sequence
+    /// is ≤ the last it saw, so a restart-to-0 would make it ignore the whole stream until the
+    /// user restarts the phone app. Persisting keeps it strictly increasing (#4).
+    private var sequence: UInt64 = UInt64(bitPattern: Int64(UserDefaults.standard.integer(forKey: AppleCompanionPublisher.sequenceDefaultsKey)))
     private let bluetooth = AppleCompanionBluetoothPeripheral()
+    /// Watches the network path so a Wi-Fi/network drop+restore re-establishes the LAN link.
+    /// MultipeerConnectivity does NOT resume advertising on its own after a path change, so
+    /// without this the phone can't reconnect until the app is restarted (#4).
+    private let pathMonitor = NWPathMonitor()
+    private var pathMonitorStarted = false
+    private var lastPathSatisfied: Bool?
+    private var lastReconnectAt: Date?
+    // Coalesce companion pushes: many concurrent agents fire hook events in bursts, and
+    // pushing on every state change floods MultipeerConnectivity (pegged CPU). Cap to ~2/s.
+    private var lastFlushAt: Date?
+    private var trailingFlushScheduled = false
+    private static let minFlushInterval: TimeInterval = 0.5
+    /// While the companion is enabled, hold an activity assertion so macOS App Nap doesn't
+    /// throttle our heartbeat timer / BLE updates and let the idle link drop.
+    private var activityToken: NSObjectProtocol?
 
     private let encoder: JSONEncoder = {
         let encoder = JSONEncoder()
@@ -72,10 +92,13 @@ final class AppleCompanionPublisher: NSObject, ObservableObject {
             advertising = false
             connectedPeerNames = []
             session.disconnect()
+            endActivity()
             return
         }
 
         lastError = nil
+        beginActivity()
+        startPathMonitorIfNeeded()
         advertiser.startAdvertisingPeer()
         bluetooth.configure(enabled: true)
         advertising = true
@@ -91,6 +114,22 @@ final class AppleCompanionPublisher: NSObject, ObservableObject {
         flush(reason: "change")
     }
 
+    private func beginActivity() {
+        guard activityToken == nil else { return }
+        // Prevent App Nap (keeps timers/BLE responsive) but still allow the Mac to sleep when idle.
+        activityToken = ProcessInfo.processInfo.beginActivity(
+            options: [.userInitiatedAllowingIdleSystemSleep],
+            reason: "iPhone Buddy live link"
+        )
+    }
+
+    private func endActivity() {
+        if let activityToken {
+            ProcessInfo.processInfo.endActivity(activityToken)
+            self.activityToken = nil
+        }
+    }
+
     func reconnect() {
         guard enabled else { return }
         advertiser.stopAdvertisingPeer()
@@ -102,9 +141,53 @@ final class AppleCompanionPublisher: NSObject, ObservableObject {
         flush(reason: "reconnect")
     }
 
+    private func startPathMonitorIfNeeded() {
+        guard !pathMonitorStarted else { return }
+        pathMonitorStarted = true
+        pathMonitor.pathUpdateHandler = { [weak self] path in
+            let satisfied = path.status == .satisfied
+            Task { @MainActor in self?.handlePathUpdate(satisfied: satisfied) }
+        }
+        pathMonitor.start(queue: DispatchQueue(label: "com.codeisland.companion.path"))
+    }
+
+    private func handlePathUpdate(satisfied: Bool) {
+        let previous = lastPathSatisfied
+        lastPathSatisfied = satisfied
+        // Only act on a real transition back to "network available"; ignore the initial
+        // callback (previous == nil) and debounce flapping so MC advertising doesn't churn.
+        guard enabled, satisfied, previous == false else { return }
+        // A path blip shouldn't tear down a healthy link — only re-establish if no peer is connected.
+        guard session.connectedPeers.isEmpty else { return }
+        let now = Date()
+        if let last = lastReconnectAt, now.timeIntervalSince(last) < 3 { return }
+        lastReconnectAt = now
+        Self.log.info("network path restored — re-establishing companion link")
+        reconnect()
+    }
+
     private func flush(reason: String) {
+        let now = Date()
+        if let last = lastFlushAt, now.timeIntervalSince(last) < Self.minFlushInterval {
+            // Within the rate-limit window — schedule a single trailing flush instead of
+            // sending now, so a burst of state changes collapses into one push.
+            guard !trailingFlushScheduled else { return }
+            trailingFlushScheduled = true
+            let delay = Self.minFlushInterval - now.timeIntervalSince(last)
+            DispatchQueue.main.asyncAfter(deadline: .now() + max(0.05, delay)) { [weak self] in
+                self?.trailingFlushScheduled = false
+                self?.performFlush(reason: "coalesced")
+            }
+            return
+        }
+        performFlush(reason: reason)
+    }
+
+    private func performFlush(reason: String) {
+        lastFlushAt = Date()
         guard enabled, let appState else { return }
         sequence &+= 1
+        UserDefaults.standard.set(Int64(bitPattern: sequence), forKey: Self.sequenceDefaultsKey)
         let payload = appState.appleCompanionStatePayload(sequence: sequence)
 
         bluetooth.publish(payload)
@@ -175,8 +258,18 @@ extension AppleCompanionPublisher: MCSessionDelegate {
     nonisolated func session(_ session: MCSession, peer peerID: MCPeerID, didChange state: MCSessionState) {
         Task { @MainActor in
             self.refreshConnectedPeers()
-            if state == .connected {
+            switch state {
+            case .connected:
                 self.flush(reason: "peer-connected")
+            case .notConnected:
+                // Peer dropped. MC keeps advertising on its own, so only restart advertising
+                // if it actually stopped — re-advertising on every disconnect can feed a
+                // connect/disconnect storm (pegged CPU) when a peer link is flapping (#4).
+                guard self.enabled, !self.advertising else { break }
+                self.advertiser.startAdvertisingPeer()
+                self.advertising = true
+            default:
+                break
             }
         }
     }

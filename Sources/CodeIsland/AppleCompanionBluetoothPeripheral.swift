@@ -10,6 +10,9 @@ final class AppleCompanionBluetoothPeripheral: NSObject, ObservableObject {
 
     private static let log = Logger(subsystem: "com.codeisland", category: "apple-companion-ble")
     private static let maxChunkPayloadBytes = 120
+    /// How often to verify advertising is alive and nudge a keep-alive to subscribers. Keeps the
+    /// link warm independent of the publisher heartbeat (which App Nap can throttle).
+    private static let watchdogInterval: TimeInterval = 4
 
     @Published private(set) var poweredOn = false
     @Published private(set) var advertising = false
@@ -21,6 +24,10 @@ final class AppleCompanionBluetoothPeripheral: NSObject, ObservableObject {
     private var latestChunks: [Data] = []
     private var pendingChunks: [Data] = []
     private var enabled = false
+    /// True once our service is registered with the system. We add it exactly once per BT
+    /// power cycle — rebuilding it would disconnect a subscribed central (the old instability).
+    private var serviceAdded = false
+    private var watchdog: Timer?
 
     private let encoder: JSONEncoder = {
         let encoder = JSONEncoder()
@@ -32,8 +39,10 @@ final class AppleCompanionBluetoothPeripheral: NSObject, ObservableObject {
         self.enabled = enabled
 
         guard enabled else {
+            stopWatchdog()
             peripheralManager.stopAdvertising()
             peripheralManager.removeAllServices()
+            serviceAdded = false
             advertising = false
             hasSubscribers = false
             pendingChunks = []
@@ -42,7 +51,10 @@ final class AppleCompanionBluetoothPeripheral: NSObject, ObservableObject {
         }
 
         _ = peripheralManager
-        rebuildServiceIfReady()
+        // Idempotent: if the service is already up, just make sure we're advertising — do NOT
+        // tear it down (that would drop a connected phone). Only build when missing.
+        ensureServiceAndAdvertising()
+        startWatchdog()
     }
 
     func publish(_ payload: AppleCompanionStatePayload) {
@@ -63,11 +75,26 @@ final class AppleCompanionBluetoothPeripheral: NSObject, ObservableObject {
         }
     }
 
-    private func rebuildServiceIfReady() {
-        guard enabled, peripheralManager.state == .poweredOn else { return }
+    // MARK: - Service / advertising lifecycle
 
+    /// Bring the peripheral to the desired running state without disturbing an existing,
+    /// healthy service+advertisement. Safe to call repeatedly.
+    private func ensureServiceAndAdvertising() {
+        guard enabled, peripheralManager.state == .poweredOn else { return }
+        if serviceAdded {
+            startAdvertisingIfReady()
+        } else {
+            addServiceFresh()
+        }
+    }
+
+    /// Register the GATT service from scratch. Only call when `serviceAdded == false`
+    /// (no service yet, or the BT stack was reset) — advertising restarts in `didAdd`.
+    private func addServiceFresh() {
         peripheralManager.stopAdvertising()
         peripheralManager.removeAllServices()
+        advertising = false
+        serviceAdded = false
 
         let characteristic = CBMutableCharacteristic(
             type: Self.notifyCharacteristicUUID,
@@ -82,13 +109,40 @@ final class AppleCompanionBluetoothPeripheral: NSObject, ObservableObject {
     }
 
     private func startAdvertisingIfReady() {
-        guard enabled, poweredOn, !advertising else { return }
-
+        guard enabled, poweredOn, serviceAdded, !advertising else { return }
         peripheralManager.startAdvertising([
             CBAdvertisementDataServiceUUIDsKey: [Self.serviceUUID],
             CBAdvertisementDataLocalNameKey: "CodeIsland"
         ])
         advertising = true
+    }
+
+    private func startWatchdog() {
+        guard watchdog == nil else { return }
+        // Run in .common mode so it still fires while menus/tracking loops are active.
+        let timer = Timer(timeInterval: Self.watchdogInterval, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.watchdogTick() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        watchdog = timer
+    }
+
+    private func stopWatchdog() {
+        watchdog?.invalidate()
+        watchdog = nil
+    }
+
+    /// Self-heal: re-add the service if the stack lost it, restart advertising if it stopped,
+    /// and re-push the latest state to keep a subscribed link from going idle/stale.
+    private func watchdogTick() {
+        guard enabled, poweredOn else { return }
+        if !serviceAdded {
+            addServiceFresh()
+        } else if !advertising {
+            startAdvertisingIfReady()
+        } else if hasSubscribers, !latestChunks.isEmpty {
+            sendLatestChunks()
+        }
     }
 
     private func sendLatestChunks() {
@@ -137,23 +191,31 @@ extension AppleCompanionBluetoothPeripheral: CBPeripheralManagerDelegate {
             case .poweredOn:
                 self.poweredOn = true
                 self.lastError = nil
-                self.rebuildServiceIfReady()
+                // A fresh power-on means the stack dropped any previous service.
+                self.serviceAdded = false
+                self.advertising = false
+                if self.enabled { self.ensureServiceAndAdvertising() }
             case .poweredOff:
                 self.poweredOn = false
                 self.advertising = false
                 self.hasSubscribers = false
+                self.serviceAdded = false
                 self.lastError = "蓝牙已关闭"
             case .unauthorized:
                 self.poweredOn = false
                 self.advertising = false
+                self.serviceAdded = false
                 self.lastError = "蓝牙权限未授权"
             case .unsupported:
                 self.poweredOn = false
                 self.advertising = false
+                self.serviceAdded = false
                 self.lastError = "这台 Mac 不支持蓝牙"
             case .resetting:
                 self.poweredOn = false
                 self.advertising = false
+                self.hasSubscribers = false
+                self.serviceAdded = false
                 self.lastError = "蓝牙正在重置"
             case .unknown:
                 self.poweredOn = false
@@ -168,11 +230,12 @@ extension AppleCompanionBluetoothPeripheral: CBPeripheralManagerDelegate {
     nonisolated func peripheralManager(_ peripheral: CBPeripheralManager, didAdd service: CBService, error: Error?) {
         Task { @MainActor in
             if let error {
+                self.serviceAdded = false
                 self.lastError = error.localizedDescription
                 Self.log.error("failed to add BLE service: \(error.localizedDescription)")
                 return
             }
-
+            self.serviceAdded = true
             self.startAdvertisingIfReady()
         }
     }
@@ -209,6 +272,8 @@ extension AppleCompanionBluetoothPeripheral: CBPeripheralManagerDelegate {
         Task { @MainActor in
             self.hasSubscribers = false
             self.pendingChunks = []
+            // Keep the Mac discoverable so the phone can reconnect after a drop.
+            self.startAdvertisingIfReady()
         }
     }
 

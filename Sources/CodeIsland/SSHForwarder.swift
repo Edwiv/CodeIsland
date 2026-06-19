@@ -155,6 +155,24 @@ final class SSHForwarder {
         proc.waitUntilExit()
     }
 
+    /// One-time startup sweep: kill reverse-forward SSH tunnels orphaned (reparented to
+    /// launchd) by a previous CodeIsland instance that exited without running `disconnect()`
+    /// — e.g. a crash or force-quit. Without this they accumulate across restarts and hold
+    /// stale remote listen sockets, and the process churn drives high system CPU. MUST be
+    /// called at launch BEFORE this instance spawns any tunnels: at that point every match
+    /// is necessarily an orphan. Matches only our `-R /tmp/codeisland…sock` reverse forwards,
+    /// never the user's interactive ssh or a ControlMaster session.
+    nonisolated static func killOrphanedTunnels() {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+        proc.arguments = ["-f", "ssh .*-R /tmp/codeisland.*\\.sock"]
+        proc.standardInput = FileHandle.nullDevice
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        try? proc.run()
+        proc.waitUntilExit()
+    }
+
     /// Build SSH arguments that remove a stale remote socket file.
     /// Extracted for testability.  See `cleanupStaleRemoteSocket`.
     static func cleanupArguments(host: RemoteHost, remoteSocketPath: String) -> [String] {
