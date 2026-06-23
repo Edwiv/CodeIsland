@@ -57,11 +57,16 @@ final class LarkNotifier: ObservableObject {
         let sessionId: String
         let kind: Kind
         var pushed: Bool
+        var pushCount: Int
         var resolvedRemotely: Bool   // phone already updated its own card; don't overwrite it
     }
     private var generation = 0
     private var tracked: [String: Tracked] = [:]        // sessionId -> tracked
     private var pushTimers: [String: DispatchWorkItem] = [:]
+    private var refreshTimers: [String: DispatchWorkItem] = [:]
+    /// Lark clients can retire card actions before the underlying agent request times out.
+    /// Refreshing the same reqKey keeps the existing card actionable without spamming chat.
+    private let cardRefreshInterval = 240
 
     // MARK: - Setup
 
@@ -282,6 +287,7 @@ final class LarkNotifier: ObservableObject {
         // Resolved / kind-changed -> recall card + clean up.
         for (sid, item) in tracked where current[sid] != item.kind {
             pushTimers[sid]?.cancel(); pushTimers[sid] = nil
+            refreshTimers[sid]?.cancel(); refreshTimers[sid] = nil
             if item.pushed && !item.resolvedRemotely {
                 bridge.send(["type": "resolve", "reqId": item.reqKey, "by": "desktop"])
             }
@@ -292,7 +298,14 @@ final class LarkNotifier: ObservableObject {
         for (sid, kind) in current where tracked[sid] == nil {
             let reqKey = "\(sid)#\(generation)"
             generation += 1
-            tracked[sid] = Tracked(reqKey: reqKey, sessionId: sid, kind: kind, pushed: false, resolvedRemotely: false)
+            tracked[sid] = Tracked(
+                reqKey: reqKey,
+                sessionId: sid,
+                kind: kind,
+                pushed: false,
+                pushCount: 0,
+                resolvedRemotely: false
+            )
             larkDebugLog("notifier: new pending \(kind) sid=\(sid.prefix(8)) → push in \(effectiveDelay(for: sid))s")
             armPushTimer(sessionId: sid)
         }
@@ -313,31 +326,54 @@ final class LarkNotifier: ObservableObject {
         return isRemote ? min(pushDelay, 240) : pushDelay
     }
 
-    private func firePush(sessionId: String) {
+    private func firePush(sessionId: String, refresh: Bool = false) {
         pushTimers[sessionId] = nil
-        guard enabled, var item = tracked[sessionId], !item.pushed else { return }
+        if refresh { refreshTimers[sessionId] = nil }
+        guard enabled, var item = tracked[sessionId] else { return }
+        if item.pushed && !refresh { return }
         // Wait for the bridge to be connected; retry shortly otherwise.
         guard case .ready = status else {
             larkDebugLog("notifier: firePush deferred (status not ready) sid=\(sessionId.prefix(8))")
-            armRetry(sessionId: sessionId)
+            armRetry(sessionId: sessionId, refresh: refresh)
             return
         }
-        guard let payload = buildPushPayload(item) else {
+        guard var payload = buildPushPayload(item) else {
             larkDebugLog("notifier: firePush no payload (secret/not found) sid=\(sessionId.prefix(8))")
             return
         }
+        payload["refreshSeq"] = item.pushCount + 1
+        if refresh {
+            payload["type"] = "refresh"
+        }
         item.pushed = true
+        item.pushCount += 1
         tracked[sessionId] = item
-        larkDebugLog("notifier: PUSH \(item.kind) sid=\(sessionId.prefix(8)) reqKey=\(item.reqKey)")
+        let verb = refresh ? "REFRESH" : "PUSH"
+        larkDebugLog("notifier: \(verb) \(item.kind) sid=\(sessionId.prefix(8)) reqKey=\(item.reqKey) count=\(item.pushCount)")
         bridge.send(payload)
+        armRefreshTimer(sessionId: sessionId)
     }
 
-    private func armRetry(sessionId: String) {
+    private func armRetry(sessionId: String, refresh: Bool) {
         let work = DispatchWorkItem { [weak self] in
-            Task { @MainActor in self?.firePush(sessionId: sessionId) }
+            Task { @MainActor in self?.firePush(sessionId: sessionId, refresh: refresh) }
         }
-        pushTimers[sessionId] = work
+        if refresh {
+            refreshTimers[sessionId] = work
+        } else {
+            pushTimers[sessionId] = work
+        }
         DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: work)
+    }
+
+    private func armRefreshTimer(sessionId: String) {
+        refreshTimers[sessionId]?.cancel()
+        guard let item = tracked[sessionId], item.pushed else { return }
+        let work = DispatchWorkItem { [weak self] in
+            Task { @MainActor in self?.firePush(sessionId: sessionId, refresh: true) }
+        }
+        refreshTimers[sessionId] = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + .seconds(cardRefreshInterval), execute: work)
     }
 
     // MARK: - Payload building
@@ -404,5 +440,7 @@ final class LarkNotifier: ObservableObject {
     private func cancelAllTimers() {
         for (_, work) in pushTimers { work.cancel() }
         pushTimers.removeAll()
+        for (_, work) in refreshTimers { work.cancel() }
+        refreshTimers.removeAll()
     }
 }

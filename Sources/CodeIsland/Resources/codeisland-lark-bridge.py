@@ -12,6 +12,7 @@ Transport with the app is newline-delimited JSON over stdin/stdout:
   app → sidecar:
     {"type":"config","appId":..,"appSecret":..,"target":{"type":"dm|group","value":..},"i18n":{..}}
     {"type":"push","reqId":..,"askType":"approval|question","agent":..,"project":..,"sessionShort":..,"payload":{..}}
+    {"type":"refresh","reqId":.., ...same payload shape as push...}
     {"type":"resolve","reqId":..,"by":"desktop"}
     {"type":"test"}
 
@@ -98,13 +99,16 @@ def _md(content):
     return {"tag": "markdown", "content": content}
 
 
-def _btn(text, btype, action_id, req_id, form_submit=False):
+def _btn(text, btype, action_id, req_id, form_submit=False, refresh_seq=None):
+    value = {"reqId": req_id, "actionId": action_id}
+    if refresh_seq is not None:
+        value["refreshSeq"] = refresh_seq
     b = {
         "tag": "button",
         "text": {"tag": "plain_text", "content": text},
         "type": btype,
         "name": "btn_%s" % action_id,
-        "value": {"reqId": req_id, "actionId": action_id},
+        "value": value,
     }
     if form_submit:
         b["form_action_type"] = "submit"
@@ -147,6 +151,7 @@ def _header_lines(msg):
 
 def build_approval_card(msg):
     req_id = msg["reqId"]
+    refresh_seq = msg.get("refreshSeq")
     payload = msg.get("payload", {})
     elements = [_md("\n".join(_header_lines(msg))), {"tag": "hr"}]
     elements.append(_md("**%s**: `%s`" % (t("permission", "Permission"), payload.get("tool", "?"))))
@@ -156,10 +161,10 @@ def build_approval_card(msg):
         elements.append(_md("```\n%s\n```" % _clip(command, 500)))
     elif summary:
         elements.append(_md(_clip(summary, 500)))
-    buttons = [_btn(t("allow_once", "Allow once"), "primary", "allowOnce", req_id)]
+    buttons = [_btn(t("allow_once", "Allow once"), "primary", "allowOnce", req_id, refresh_seq=refresh_seq)]
     if payload.get("allowAlways"):
-        buttons.append(_btn(t("allow_always", "Always allow"), "default", "allowAlways", req_id))
-    buttons.append(_btn(t("deny", "Deny"), "danger", "deny", req_id))
+        buttons.append(_btn(t("allow_always", "Always allow"), "default", "allowAlways", req_id, refresh_seq=refresh_seq))
+    buttons.append(_btn(t("deny", "Deny"), "danger", "deny", req_id, refresh_seq=refresh_seq))
     elements.append(_button_row(buttons))
     elements.append(_md(t("footer", "📍 from CodeIsland")))
     return _wrap(t("approval_title", "⚠️ Agent needs permission"), elements, "orange")
@@ -167,6 +172,7 @@ def build_approval_card(msg):
 
 def build_question_card(msg):
     req_id = msg["reqId"]
+    refresh_seq = msg.get("refreshSeq")
     items = (msg.get("payload", {}) or {}).get("items", [])
     elements = [_md("\n".join(_header_lines(msg))), {"tag": "hr"}]
     form_elements = []
@@ -192,15 +198,15 @@ def build_question_card(msg):
             form_elements.append(sel)
     if any_options:
         form_elements.append(_button_row([
-            _btn(t("submit", "Submit"), "primary", "device_chat_submit", req_id, form_submit=True),
-            _btn(t("skip", "Skip"), "default", "device_chat_cancel", req_id, form_submit=True),
+            _btn(t("submit", "Submit"), "primary", "device_chat_submit", req_id, form_submit=True, refresh_seq=refresh_seq),
+            _btn(t("skip", "Skip"), "default", "device_chat_cancel", req_id, form_submit=True, refresh_seq=refresh_seq),
         ]))
         elements.append({"tag": "form", "name": "form_%s" % req_id, "elements": form_elements})
     else:
         # No preset options (free-text question) — can't answer via buttons; offer skip only.
         elements.extend(form_elements)
         elements.append(_md(t("answer_on_desktop", "Please answer on your computer.")))
-        elements.append(_button_row([_btn(t("skip", "Skip"), "default", "device_chat_cancel", req_id)]))
+        elements.append(_button_row([_btn(t("skip", "Skip"), "default", "device_chat_cancel", req_id, refresh_seq=refresh_seq)]))
     elements.append(_md(t("footer", "📍 from CodeIsland")))
     return _wrap(t("question_title", "🤖 Agent has a question"), elements, "blue")
 
@@ -272,12 +278,18 @@ def send_card(card):
 
 
 def patch_card(message_id, card):
+    """Returns None on success, otherwise a short error message."""
     body = PatchMessageRequestBody.builder().content(json.dumps(card)).build()
     req = PatchMessageRequest.builder().message_id(message_id).request_body(body).build()
     try:
-        client.im.v1.message.patch(req)
+        resp = client.im.v1.message.patch(req)
+        if hasattr(resp, "success") and not resp.success():
+            return "code %s: %s" % (getattr(resp, "code", "?"), getattr(resp, "msg", "patch failed"))
+        return None
     except Exception as e:
-        log_err("patch failed: %s" % e)
+        err = str(e)
+        log_err("patch failed: %s" % err)
+        return err
 
 
 # ── WebSocket card-action handler ────────────────────────────────────────────
@@ -404,6 +416,32 @@ def handle_push(msg):
         emit({"type": "send_error", "reqId": msg.get("reqId"), "message": err or "send failed"})
 
 
+def handle_refresh(msg):
+    if client is None:
+        return
+    req_id = msg.get("reqId")
+    card = build_approval_card(msg) if msg.get("askType") == "approval" else build_question_card(msg)
+    title = card["header"]["title"]["content"]
+    with STATE_LOCK:
+        entry = req_to_msg.get(req_id)
+    if entry:
+        err = patch_card(entry["message_id"], card)
+        if err is None:
+            with STATE_LOCK:
+                if req_id in req_to_msg:
+                    req_to_msg[req_id]["title"] = title
+            emit({"type": "refreshed", "reqId": req_id, "messageId": entry["message_id"]})
+            return
+        flog("refresh: patch failed reqId=%s err=%s; sending replacement" % (req_id, err))
+        with STATE_LOCK:
+            removed = req_to_msg.pop(req_id, None)
+            if removed:
+                msg_to_req.pop(removed["message_id"], None)
+    else:
+        flog("refresh: no message mapping reqId=%s; sending replacement" % req_id)
+    handle_push(msg)
+
+
 def handle_resolve(msg):
     req_id = msg.get("reqId")
     with STATE_LOCK:
@@ -444,6 +482,8 @@ def main():
                     continue
                 elif mtype == "push":
                     handle_push(msg)
+                elif mtype == "refresh":
+                    handle_refresh(msg)
                 elif mtype == "resolve":
                     handle_resolve(msg)
                 elif mtype == "test":
