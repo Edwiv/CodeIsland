@@ -57,7 +57,7 @@ struct MascotView: View {
                 HermesView(status: status, size: size)
             case "kimi":
                 KimiView(status: status, size: size)
-            case "pi":
+            case "pi", "omp":
                 PiView(status: status, size: size)
             case "cline":
                 ClineView(status: status, size: size)
