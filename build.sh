@@ -132,7 +132,8 @@ build_mac() {
     ENTITLEMENTS="CodeIsland.entitlements"
 
     # Use SIGN_ID env var, or auto-detect: prefer "Developer ID Application" for distribution,
-    # fall back to any valid identity, then ad-hoc
+    # fall back to any valid identity, then ad-hoc. Keeping a stable certificate identity
+    # preserves macOS TCC permissions such as Bluetooth and automation across local updates.
     if [ -z "${SIGN_ID:-}" ]; then
         SIGN_ID=$(security find-identity -v -p codesigning | grep "Developer ID Application" | head -1 | sed 's/.*"\(.*\)".*/\1/' 2>/dev/null || true)
     fi
@@ -145,8 +146,22 @@ build_mac() {
     fi
 
     echo "Code signing ($SIGN_ID)..."
+    # iCloud-stored build directories can attach File Provider xattrs that codesign rejects.
+    # Sign a clean staging copy outside iCloud, then copy the sealed bundle back.
+    SIGN_WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/codeisland-sign.XXXXXX")
+    SIGN_BUNDLE="$SIGN_WORK_DIR/$APP_NAME.app"
+    cleanup_sign_work_dir() {
+        rm -rf "$SIGN_WORK_DIR"
+    }
+    trap cleanup_sign_work_dir RETURN
+
+    ditto --norsrc --noextattr "$APP_BUNDLE" "$SIGN_BUNDLE"
+    find "$SIGN_BUNDLE" -print0 | xargs -0 -n 50 xattr -d com.apple.provenance 2>/dev/null || true
+    find "$SIGN_BUNDLE" -print0 | xargs -0 -n 50 xattr -d com.apple.FinderInfo 2>/dev/null || true
+    find "$SIGN_BUNDLE" -print0 | xargs -0 -n 50 xattr -d 'com.apple.fileprovider.fpfs#P' 2>/dev/null || true
+
     # Sign embedded frameworks first (inside-out).
-    SPARKLE_FW="$APP_BUNDLE/Contents/Frameworks/Sparkle.framework"
+    SPARKLE_FW="$SIGN_BUNDLE/Contents/Frameworks/Sparkle.framework"
     # Sign nested helpers inside Sparkle before the framework itself.
     for xpc in "$SPARKLE_FW/Versions/B/XPCServices/"*.xpc; do
         [ -e "$xpc" ] || continue
@@ -160,8 +175,12 @@ build_mac() {
     fi
     codesign --force --options runtime --sign "$SIGN_ID" "$SPARKLE_FW"
 
-    codesign --force --options runtime --sign "$SIGN_ID" "$APP_BUNDLE/Contents/Helpers/codeisland-bridge"
-    codesign --force --options runtime --sign "$SIGN_ID" --entitlements "$ENTITLEMENTS" "$APP_BUNDLE"
+    codesign --force --options runtime --sign "$SIGN_ID" "$SIGN_BUNDLE/Contents/Helpers/codeisland-bridge"
+    codesign --force --options runtime --sign "$SIGN_ID" --entitlements "$ENTITLEMENTS" "$SIGN_BUNDLE"
+    codesign --verify --deep --strict --verbose=2 "$SIGN_BUNDLE"
+
+    rm -rf "$APP_BUNDLE"
+    ditto --norsrc --noextattr "$SIGN_BUNDLE" "$APP_BUNDLE"
 
     if [ "$NOTARIZE" = true ] && [[ "$SIGN_ID" == *"Developer ID"* ]]; then
         echo "Creating ZIP for notarization..."

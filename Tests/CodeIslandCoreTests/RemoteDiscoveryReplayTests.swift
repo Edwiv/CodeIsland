@@ -205,6 +205,118 @@ final class RemoteDiscoveryReplayTests: XCTestCase {
         XCTAssertEqual(sessions[key]?.status, .processing)
     }
 
+    func testDiscoveredInterruptedTerminalStatusCompletesTrackedLiveSessionOnce() {
+        var sessions: [String: SessionSnapshot] = [:]
+        let key = "remote:devbox_14:remote-interrupted"
+
+        _ = reduceEvent(sessions: &sessions, event: makeEvent([
+            "hook_event_name": "SessionStart",
+            "session_id": "remote-interrupted",
+            "cwd": "/home/dev/project",
+            "_source": "claude",
+            "_remote_host_id": "devbox_14",
+        ]), maxHistory: 100)
+        _ = reduceEvent(sessions: &sessions, event: makeEvent([
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "remote-interrupted",
+            "_remote_host_id": "devbox_14",
+            "prompt": "live work",
+        ]), maxHistory: 100)
+        XCTAssertEqual(sessions[key]?.status, .processing)
+
+        let effects = reduceEvent(sessions: &sessions, event: makeEvent([
+            "hook_event_name": "SessionStart",
+            "session_id": "remote-interrupted",
+            "cwd": "/home/dev/project",
+            "_source": "claude",
+            "_remote_host_id": "devbox_14",
+            "_discovered": true,
+            "_discovered_terminal_status": "interrupted",
+        ]), maxHistory: 100)
+
+        XCTAssertEqual(sessions[key]?.status, .idle)
+        XCTAssertEqual(sessions[key]?.interrupted, true)
+        XCTAssertTrue(effects.contains(.enqueueCompletion(sessionId: key)))
+
+        let repeatEffects = reduceEvent(sessions: &sessions, event: makeEvent([
+            "hook_event_name": "SessionStart",
+            "session_id": "remote-interrupted",
+            "cwd": "/home/dev/project",
+            "_source": "claude",
+            "_remote_host_id": "devbox_14",
+            "_discovered": true,
+            "_discovered_terminal_status": "interrupted",
+        ]), maxHistory: 100)
+
+        XCTAssertFalse(repeatEffects.contains(.enqueueCompletion(sessionId: key)))
+    }
+
+    func testDiscoveredCompletedTerminalStatusCompletesTrackedLiveSessionOnce() {
+        var sessions: [String: SessionSnapshot] = [:]
+        let key = "remote:devbox_14:remote-completed"
+
+        _ = reduceEvent(sessions: &sessions, event: makeEvent([
+            "hook_event_name": "SessionStart",
+            "session_id": "remote-completed",
+            "cwd": "/home/dev/project",
+            "_source": "codex",
+            "_remote_host_id": "devbox_14",
+        ]), maxHistory: 100)
+        _ = reduceEvent(sessions: &sessions, event: makeEvent([
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "remote-completed",
+            "_remote_host_id": "devbox_14",
+            "prompt": "live work",
+        ]), maxHistory: 100)
+        XCTAssertEqual(sessions[key]?.status, .processing)
+
+        let effects = reduceEvent(sessions: &sessions, event: makeEvent([
+            "hook_event_name": "SessionStart",
+            "session_id": "remote-completed",
+            "cwd": "/home/dev/project",
+            "_source": "codex",
+            "_remote_host_id": "devbox_14",
+            "_discovered": true,
+            "_discovered_terminal_status": "completed",
+        ]), maxHistory: 100)
+
+        XCTAssertEqual(sessions[key]?.status, .idle)
+        XCTAssertEqual(sessions[key]?.interrupted, false)
+        XCTAssertTrue(effects.contains(.enqueueCompletion(sessionId: key)))
+
+        let repeatEffects = reduceEvent(sessions: &sessions, event: makeEvent([
+            "hook_event_name": "SessionStart",
+            "session_id": "remote-completed",
+            "cwd": "/home/dev/project",
+            "_source": "codex",
+            "_remote_host_id": "devbox_14",
+            "_discovered": true,
+            "_discovered_terminal_status": "completed",
+        ]), maxHistory: 100)
+
+        XCTAssertFalse(repeatEffects.contains(.enqueueCompletion(sessionId: key)))
+    }
+
+    func testNewDiscoveredInterruptedTerminalStatusWinsOverProcessingHint() {
+        var sessions: [String: SessionSnapshot] = [:]
+        let key = "remote:devbox_14:remote-interrupted-new"
+
+        let effects = reduceEvent(sessions: &sessions, event: makeEvent([
+            "hook_event_name": "SessionStart",
+            "session_id": "remote-interrupted-new",
+            "cwd": "/home/dev/project",
+            "_source": "claude",
+            "_remote_host_id": "devbox_14",
+            "_discovered": true,
+            "_discovered_status": "processing",
+            "_discovered_terminal_status": "interrupted",
+        ]), maxHistory: 100)
+
+        XCTAssertEqual(sessions[key]?.status, .idle)
+        XCTAssertEqual(sessions[key]?.interrupted, true)
+        XCTAssertFalse(effects.contains(.enqueueCompletion(sessionId: key)))
+    }
+
     func testDiscoveredWithoutStatusHintStaysIdle() {
         // A stale (outside the active-window) discovered session carries no hint and stays idle.
         let event = makeEvent([

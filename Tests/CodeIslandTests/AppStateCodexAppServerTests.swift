@@ -108,4 +108,37 @@ final class AppStateCodexAppServerTests: XCTestCase {
 
         XCTAssertEqual(snapshot.status, .waitingApproval)
     }
+
+    func testRemoteCodexTerminalDiscoveryCompletesMatchingCodexAppSession() throws {
+        let appState = AppState()
+        let providerSessionId = "019ef7f0-10de-7bc2-a5b6-f1edb92fe8c6"
+        let codexAppSessionId = AppState.codexAppSessionPrefix + providerSessionId
+
+        var snapshot = SessionSnapshot()
+        snapshot.source = "codex"
+        snapshot.termBundleId = AppState.codexAppBundleId
+        snapshot.providerSessionId = providerSessionId
+        snapshot.status = .running
+        snapshot.cwd = "/data00/home/zhengyijie"
+        appState.sessions[codexAppSessionId] = snapshot
+
+        let payload: [String: Any] = [
+            "hook_event_name": "SessionStart",
+            "session_id": providerSessionId,
+            "cwd": "/data00/home/zhengyijie",
+            "_source": "codex",
+            "_remote_host_id": "devbox_l4",
+            "_remote_host_name": "devbox_l4",
+            "_discovered": true,
+            "_discovered_terminal_status": "completed",
+        ]
+        let data = try JSONSerialization.data(withJSONObject: payload)
+        let event = try XCTUnwrap(HookEvent(from: data))
+
+        appState.handleEvent(event)
+
+        XCTAssertEqual(appState.sessions[codexAppSessionId]?.status, .idle)
+        XCTAssertEqual(appState.sessions[codexAppSessionId]?.interrupted, false)
+        XCTAssertNil(appState.sessions["remote:devbox_l4:\(providerSessionId)"])
+    }
 }

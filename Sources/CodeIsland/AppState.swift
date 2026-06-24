@@ -926,6 +926,10 @@ final class AppState {
 
         let sessionId = event.sessionId ?? "default"
 
+        if applyCodexAppTerminalDiscoveryIfNeeded(event) {
+            return
+        }
+
         // Skip Codex APP internal sessions (title generation, etc.) — they have no transcript
         if (event.rawJSON["_source"] as? String) == "codex"
             && sessions[sessionId] == nil
@@ -1024,6 +1028,55 @@ final class AppState {
         scheduleSave()
         startRotationIfNeeded()
         refreshDerivedState()
+    }
+
+    private func applyCodexAppTerminalDiscoveryIfNeeded(_ event: HookEvent) -> Bool {
+        guard EventNormalizer.normalize(event.eventName) == "SessionStart",
+              (event.rawJSON["_discovered"] as? Bool) == true,
+              (event.rawJSON["_source"] as? String) == "codex",
+              let terminalStatus = event.rawJSON["_discovered_terminal_status"] as? String,
+              ["completed", "interrupted", "failed"].contains(terminalStatus),
+              let providerSessionId = event.rawJSON["session_id"] as? String,
+              !providerSessionId.isEmpty else {
+            return false
+        }
+
+        let codexAppSessionId = AppState.codexAppSessionPrefix + providerSessionId
+        guard sessions[codexAppSessionId] != nil else { return false }
+
+        var payload: [String: Any] = [
+            "hook_event_name": "SessionStart",
+            "session_id": codexAppSessionId,
+            "_source": "codex",
+            "_discovered": true,
+            "_discovered_terminal_status": terminalStatus,
+        ]
+        for key in ["cwd", "model", "session_title", "last_user_message", "last_assistant_message"] {
+            if let value = event.rawJSON[key] {
+                payload[key] = value
+            }
+        }
+
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let replay = HookEvent(from: data) else { return false }
+
+        let effects = reduceEvent(
+            sessions: &sessions,
+            event: replay,
+            maxHistory: maxHistory,
+            alreadyTracked: true
+        )
+        for effect in effects {
+            executeEffect(effect, sessionId: codexAppSessionId)
+        }
+
+        if sessions[codexAppSessionId]?.status == .idle && activeSessionId == codexAppSessionId {
+            activeSessionId = mostActiveSessionId()
+        }
+        scheduleSave()
+        startRotationIfNeeded()
+        refreshDerivedState()
+        return true
     }
 
     func removeRemoteSessions(hostId: String) {

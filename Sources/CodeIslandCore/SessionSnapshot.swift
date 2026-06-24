@@ -898,7 +898,18 @@ public func reduceEvent(
         // last exchange / title attaches as chat rows — so guard on whether we tracked it BEFORE
         // this event, not on `sessions[sessionId] != nil` (always true after the create-if-nil
         // above, which is why every discovered session used to end up with no conversation rows).
-        if isDiscovered && sessionExisted { break }
+        if isDiscovered && sessionExisted {
+            if let terminalStatus = event.rawJSON["_discovered_terminal_status"] as? String,
+               ["completed", "interrupted", "failed"].contains(terminalStatus),
+               sessions[sessionId]?.status != .idle {
+                sessions[sessionId]?.interrupted = (terminalStatus == "interrupted")
+                sessions[sessionId]?.status = .idle
+                sessions[sessionId]?.currentTool = nil
+                sessions[sessionId]?.toolDescription = nil
+                effects.append(.enqueueCompletion(sessionId: sessionId))
+            }
+            break
+        }
         if !isDiscovered {
             // Real SessionStart begins a fresh session. Discovered-new sessions skip this reset
             // so the model / token usage / cwd / title that extractMetadata just applied from
@@ -918,6 +929,14 @@ public func reduceEvent(
             case "processing": sessions[sessionId]?.status = .processing
             default:           break
             }
+        }
+        if isDiscovered,
+           let terminalStatus = event.rawJSON["_discovered_terminal_status"] as? String,
+           ["completed", "interrupted", "failed"].contains(terminalStatus) {
+            sessions[sessionId]?.interrupted = (terminalStatus == "interrupted")
+            sessions[sessionId]?.status = .idle
+            sessions[sessionId]?.currentTool = nil
+            sessions[sessionId]?.toolDescription = nil
         }
         // Re-apply metadata from this event (common extraction above wrote to the old session)
         if let cwd = event.rawJSON["cwd"] as? String, !cwd.isEmpty { sessions[sessionId]?.cwd = cwd }

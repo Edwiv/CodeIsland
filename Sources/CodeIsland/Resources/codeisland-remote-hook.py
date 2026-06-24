@@ -6,7 +6,7 @@ import subprocess
 import sys
 import time
 
-VERSION = "0.4.0"
+VERSION = "0.4.1"
 # Per-user socket path (#193): CodeIsland injects CODEISLAND_SOCKET_PATH via the hook
 # command, but fall back to a uid-scoped path so multiple users on a shared host never
 # collide on a single /tmp/codeisland.sock.
@@ -124,6 +124,16 @@ def _codebuddy_jsonl_path(session_id, cwd):
     return path if os.path.exists(path) else None
 
 
+def _codex_session_id_from_path(path):
+    name = os.path.basename(path)
+    if not name.endswith(".jsonl"):
+        return None
+    stem = name[:-len(".jsonl")]
+    # Codex filenames are rollout-YYYY-MM-DDThh-mm-ss-<thread-id>.jsonl.
+    # The thread id is UUID-shaped but not necessarily RFC-versioned.
+    return stem[-36:] if len(stem) >= 36 else stem
+
+
 def _extract_text(content):
     """A transcript message's content is either a plain string (user turns) or a list of
     typed blocks (Claude assistant turns); pull human-readable text out of either shape."""
@@ -151,6 +161,10 @@ def _is_noise_user_text(text):
     return False
 
 
+def _is_interrupted_marker(text):
+    return isinstance(text, str) and text.lstrip().startswith("[Request interrupted")
+
+
 def _clip(text, limit):
     if not isinstance(text, str):
         return text
@@ -168,6 +182,7 @@ def _scan_session_jsonl(path):
     cwd = None
     model = None
     usage = None
+    terminal_status = None
 
     try:
         with open(path, "r", encoding="utf-8") as handle:
@@ -220,10 +235,15 @@ def _scan_session_jsonl(path):
                     continue
 
                 if role == "user":
+                    if _is_interrupted_marker(text) or payload.get("interruptedMessageId"):
+                        terminal_status = "interrupted"
+                        continue
                     if payload.get("isMeta") is True or _is_noise_user_text(text):
                         continue
+                    terminal_status = None
                     last_user = text
                 elif role == "assistant":
+                    terminal_status = None
                     last_assistant = text
     except Exception:
         return {}
@@ -240,6 +260,8 @@ def _scan_session_jsonl(path):
     }
     if model:
         result["model"] = model
+    if terminal_status:
+        result["terminal_status"] = terminal_status
     # Flatten Claude's usage block to the top-level token names the Mac reducer reads
     # (extractMetadata: input_tokens / output_tokens / cache_read_tokens / cache_write_tokens).
     if isinstance(usage, dict):
@@ -261,6 +283,117 @@ def _scan_claude_jsonl(session_id, cwd):
 
 def _scan_codebuddy_jsonl(session_id, cwd):
     return _scan_session_jsonl(_codebuddy_jsonl_path(session_id, cwd))
+
+
+def _scan_codex_jsonl(path):
+    if not path:
+        return {}
+
+    cwd = None
+    model = None
+    last_user = None
+    last_assistant = None
+    terminal_status = None
+
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    payload = json.loads(line)
+                except Exception:
+                    continue
+
+                msg_type = payload.get("type")
+                data = payload.get("payload")
+                if not isinstance(data, dict):
+                    data = {}
+
+                if msg_type == "session_meta":
+                    if cwd is None:
+                        value = data.get("cwd")
+                        if isinstance(value, str) and value.strip():
+                            cwd = value.strip()
+                    if model is None:
+                        value = data.get("model") or data.get("model_provider")
+                        if isinstance(value, str) and value.strip():
+                            model = value.strip()
+                    continue
+
+                if msg_type == "turn_context":
+                    if cwd is None:
+                        value = data.get("cwd")
+                        if isinstance(value, str) and value.strip():
+                            cwd = value.strip()
+                    if model is None:
+                        value = data.get("model")
+                        if isinstance(value, str) and value.strip():
+                            model = value.strip()
+                    continue
+
+                if msg_type == "event_msg":
+                    event_type = data.get("type")
+                    if event_type == "task_started":
+                        terminal_status = None
+                    elif event_type == "task_complete":
+                        terminal_status = "completed"
+                    elif event_type == "turn_aborted":
+                        terminal_status = "interrupted"
+                    elif event_type == "turn_failed":
+                        terminal_status = "failed"
+
+                    message = data.get("message")
+                    if isinstance(message, str) and message.strip():
+                        if event_type == "user_message":
+                            last_user = message.strip()
+                        elif event_type == "agent_message":
+                            last_assistant = message.strip()
+                    continue
+
+                if msg_type == "response_item":
+                    role = data.get("role")
+                    content = data.get("content")
+                    text = ""
+                    if isinstance(content, list):
+                        for item in content:
+                            if not isinstance(item, dict):
+                                continue
+                            item_type = item.get("type")
+                            value = item.get("text")
+                            if not isinstance(value, str) or not value.strip():
+                                continue
+                            if role == "user" and item_type == "input_text" and last_user is None:
+                                text = value.strip()
+                                break
+                            if role == "assistant" and item_type == "output_text":
+                                text = value.strip()
+                                break
+                    if role == "user" and text and not text.lstrip().startswith("<"):
+                        last_user = text
+                    elif role == "assistant" and text:
+                        last_assistant = text
+    except Exception:
+        return {}
+
+    result = {
+        "session_title": None,
+        "last_user_message": _clip(last_user, 500),
+        "last_assistant_message": _clip(last_assistant, 500),
+        "cwd": cwd,
+    }
+    if model:
+        result["model"] = model
+    if terminal_status:
+        result["terminal_status"] = terminal_status
+    return result
+
+
+def _scan_discovered_jsonl(source, path):
+    if source == "codex":
+        return _scan_codex_jsonl(path)
+    return _scan_session_jsonl(path)
 
 
 def _read_stdin_json():
@@ -366,11 +499,31 @@ def _discover_and_emit():
                     continue
                 found.append((mtime, source, fpath, fname[:-len(".jsonl")]))
 
+    codex_base = os.path.join(home, ".codex", "sessions")
+    if os.path.isdir(codex_base):
+        try:
+            for root, _, names in os.walk(codex_base):
+                for fname in names:
+                    if not fname.endswith(".jsonl"):
+                        continue
+                    fpath = os.path.join(root, fname)
+                    try:
+                        mtime = os.path.getmtime(fpath)
+                    except OSError:
+                        continue
+                    if now - mtime > max_age_seconds:
+                        continue
+                    session_id = _codex_session_id_from_path(fpath)
+                    if session_id:
+                        found.append((mtime, "codex", fpath, session_id))
+        except OSError:
+            pass
+
     found.sort(key=lambda item: item[0], reverse=True)  # most recently active first
     for mtime, source, fpath, session_id in found[:max_sessions]:
         if not session_id:
             continue
-        info = _scan_session_jsonl(fpath)
+        info = _scan_discovered_jsonl(source, fpath)
         cwd = info.get("cwd")
         if not cwd:
             continue
@@ -386,14 +539,17 @@ def _discover_and_emit():
         # Infer live status from transcript freshness so an already-running session shows as
         # active the moment we connect. The Mac reducer applies this only to brand-new
         # discovered sessions, never overriding a session it already tracks.
-        if now - mtime <= active_window_seconds:
+        if now - mtime <= active_window_seconds and not info.get("terminal_status"):
             payload["_discovered_status"] = "processing"
         for key in ("session_title", "last_user_message", "last_assistant_message",
-                    "model", "input_tokens", "output_tokens",
+                    "model", "terminal_status", "input_tokens", "output_tokens",
                     "cache_read_tokens", "cache_write_tokens"):
             value = info.get(key)
             if value:
-                payload[key] = value
+                if key == "terminal_status":
+                    payload["_discovered_terminal_status"] = value
+                else:
+                    payload[key] = value
         _send_event(payload, expects_response=False)
     return 0
 
