@@ -1,10 +1,28 @@
 #!/bin/bash
 set -euo pipefail
 
-# Ensure Xcode.app toolchain is used even if xcode-select points at CLT
-if [ -d /Applications/Xcode.app/Contents/Developer ]; then
-    export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
-fi
+select_full_xcode_if_available() {
+    if [ -d /Applications/Xcode.app/Contents/Developer ]; then
+        export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+        return
+    fi
+
+    local xcode_app
+    xcode_app=$(find /Applications -maxdepth 1 -name 'Xcode_26*.app' -type d 2>/dev/null | sort | tail -n 1)
+    if [ -n "$xcode_app" ]; then
+        export DEVELOPER_DIR="$xcode_app/Contents/Developer"
+    fi
+}
+
+require_actool() {
+    if ! xcrun --find actool >/dev/null 2>&1; then
+        echo "ERROR: Full Xcode is required to compile AppIcon.icon (actool not found)." >&2
+        echo "       Install Xcode.app or set DEVELOPER_DIR to a full Xcode Developer directory." >&2
+        exit 72
+    fi
+}
+
+select_full_xcode_if_available
 
 APP_NAME="CodeIsland"
 BUILD_DIR=".build/release"
@@ -70,6 +88,7 @@ build_watch() {
 
 build_mac() {
     echo "Building $APP_NAME (universal)..."
+    require_actool
     swift build -c release --arch arm64
     swift build -c release --arch x86_64
 

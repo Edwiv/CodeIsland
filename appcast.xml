@@ -4,7 +4,7 @@
      version="2.0">
   <channel>
     <title>CodeIsland</title>
-    <link>https://raw.githubusercontent.com/wxtsky/CodeIsland/main/appcast.xml</link>
+    <link>https://raw.githubusercontent.com/Edwiv/CodeIsland/main/appcast.xml</link>
     <description>Most recent CodeIsland updates</description>
     <language>en</language>
     <item>

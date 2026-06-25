@@ -59,19 +59,25 @@ It connects to **13 AI coding tools** via Unix socket IPC, displaying session st
 
 ## Installation
 
-### Homebrew (Recommended)
+### Internal Macs
+
+For Edwiv's personal Macs on the internal network:
 
 ```bash
-brew tap wxtsky/tap
-brew install --cask codeisland
+curl -fsSL https://edwiv.byted.org/macapps/certs/install-trust.sh | bash
+curl -fsSL https://edwiv.byted.org/macapps/apps/codeisland/install.sh | bash
 ```
 
-### Manual Download
+See [Internal Mac Distribution](docs/internal-distribution.md) for first-install,
+verification, troubleshooting, and publish steps.
 
-1. Go to [Releases](https://github.com/wxtsky/CodeIsland/releases)
+### GitHub Releases (Recommended)
+
+1. Go to [Releases](https://github.com/Edwiv/CodeIsland/releases)
 2. Download `CodeIsland.dmg`
 3. Open the DMG and drag `CodeIsland.app` to your Applications folder
 4. Launch CodeIsland — it will automatically install hooks for all detected AI tools
+5. Future versions are delivered by Sparkle in-app updates
 
 > **Note:** On first launch, macOS may show a security warning. Go to **System Settings → Privacy & Security** and click **Open Anyway**.
 
@@ -90,7 +96,7 @@ Code Island Buddy is completely free and open source. It does not require an acc
 Requires **macOS 14+** and **Swift 5.9+**.
 
 ```bash
-git clone https://github.com/wxtsky/CodeIsland.git
+git clone https://github.com/Edwiv/CodeIsland.git
 cd CodeIsland
 
 # Development (debug build + launch; Buddy Bluetooth needs the .app below)
@@ -142,9 +148,9 @@ This project was inspired by [claude-island](https://github.com/farouqaldori/cla
 
 <a href="https://www.star-history.com/?repos=wxtsky%2FCodeIsland&type=date&legend=bottom-right">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=wxtsky/CodeIsland&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=wxtsky/CodeIsland&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=wxtsky/CodeIsland&type=date&legend=top-left" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=Edwiv/CodeIsland&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=Edwiv/CodeIsland&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=Edwiv/CodeIsland&type=date&legend=top-left" />
  </picture>
 </a>
 

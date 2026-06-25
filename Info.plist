@@ -30,13 +30,15 @@
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>CodeIsland uses Bluetooth to mirror the island onto Buddy.</string>
 	<key>SUAutomaticallyUpdate</key>
-	<false/>
+	<true/>
 	<key>SUEnableAutomaticChecks</key>
 	<true/>
 	<key>SUFeedURL</key>
-	<string>https://raw.githubusercontent.com/wxtsky/CodeIsland/main/appcast.xml</string>
+	<string>https://edwiv.byted.org/macapps/apps/codeisland/appcast.xml</string>
 	<key>SUPublicEDKey</key>
-	<string>oqLtx5s2hc8Xgsp4rEuTwnQ8UGRT4ma4tjlf+1i3YHA=</string>
+	<string>Y3/DPPGhyBKz6bjVKHBlvU5Tm5sBrZJORqVNcODYQD0=</string>
+	<key>SUVerifyUpdateBeforeExtraction</key>
+	<true/>
 	<key>SUScheduledCheckInterval</key>
 	<integer>14400</integer>
 	<key>NSBonjourServices</key>
