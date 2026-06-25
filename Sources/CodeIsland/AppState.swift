@@ -926,7 +926,7 @@ final class AppState {
 
         let sessionId = event.sessionId ?? "default"
 
-        if applyCodexAppTerminalDiscoveryIfNeeded(event) {
+        if applyCodexAppDiscoveryIfNeeded(event) {
             return
         }
 
@@ -1030,12 +1030,13 @@ final class AppState {
         refreshDerivedState()
     }
 
-    private func applyCodexAppTerminalDiscoveryIfNeeded(_ event: HookEvent) -> Bool {
+    /// Codex Desktop app-server and remote transcript discovery can report the same
+    /// thread through different namespaces (`codexapp:<id>` vs `remote:<host>:<id>`).
+    /// Fold discovery back into the app-server session whenever the provider id matches.
+    private func applyCodexAppDiscoveryIfNeeded(_ event: HookEvent) -> Bool {
         guard EventNormalizer.normalize(event.eventName) == "SessionStart",
               (event.rawJSON["_discovered"] as? Bool) == true,
               (event.rawJSON["_source"] as? String) == "codex",
-              let terminalStatus = event.rawJSON["_discovered_terminal_status"] as? String,
-              ["completed", "interrupted", "failed"].contains(terminalStatus),
               let providerSessionId = event.rawJSON["session_id"] as? String,
               !providerSessionId.isEmpty else {
             return false
@@ -1043,14 +1044,22 @@ final class AppState {
 
         let codexAppSessionId = AppState.codexAppSessionPrefix + providerSessionId
         guard sessions[codexAppSessionId] != nil else { return false }
+        let terminalStatus = event.rawJSON["_discovered_terminal_status"] as? String
+        let discoveredStatus = event.rawJSON["_discovered_status"] as? String
 
         var payload: [String: Any] = [
             "hook_event_name": "SessionStart",
             "session_id": codexAppSessionId,
             "_source": "codex",
             "_discovered": true,
-            "_discovered_terminal_status": terminalStatus,
         ]
+        if let terminalStatus {
+            payload["_discovered_terminal_status"] = terminalStatus
+        }
+        if let discoveredStatus {
+            payload["_discovered_status"] = discoveredStatus
+            payload["_codexapp_discovery_replay"] = true
+        }
         for key in ["cwd", "model", "session_title", "last_user_message", "last_assistant_message"] {
             if let value = event.rawJSON[key] {
                 payload[key] = value

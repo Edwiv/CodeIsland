@@ -907,6 +907,14 @@ public func reduceEvent(
                 sessions[sessionId]?.currentTool = nil
                 sessions[sessionId]?.toolDescription = nil
                 effects.append(.enqueueCompletion(sessionId: sessionId))
+            } else if (event.rawJSON["_codexapp_discovery_replay"] as? Bool) == true,
+                      sessions[sessionId]?.status == .idle,
+                      let hint = event.rawJSON["_discovered_status"] as? String {
+                switch hint {
+                case "running":    sessions[sessionId]?.status = .running
+                case "processing": sessions[sessionId]?.status = .processing
+                default:           break
+                }
             }
             break
         }

@@ -141,4 +141,68 @@ final class AppStateCodexAppServerTests: XCTestCase {
         XCTAssertEqual(appState.sessions[codexAppSessionId]?.interrupted, false)
         XCTAssertNil(appState.sessions["remote:devbox_l4:\(providerSessionId)"])
     }
+
+    func testRemoteCodexActiveDiscoveryDoesNotDuplicateMatchingCodexAppSession() throws {
+        let appState = AppState()
+        let providerSessionId = "019efde1-8c99-7143-b9b1-b84a9fda8889"
+        let codexAppSessionId = AppState.codexAppSessionPrefix + providerSessionId
+
+        var snapshot = SessionSnapshot()
+        snapshot.source = "codex"
+        snapshot.termBundleId = AppState.codexAppBundleId
+        snapshot.providerSessionId = providerSessionId
+        snapshot.status = .running
+        snapshot.cwd = "/opt/tiger/alpha-seed"
+        appState.sessions[codexAppSessionId] = snapshot
+
+        let payload: [String: Any] = [
+            "hook_event_name": "SessionStart",
+            "session_id": providerSessionId,
+            "cwd": "/opt/tiger/alpha-seed",
+            "_source": "codex",
+            "_remote_host_id": "h20_debug",
+            "_remote_host_name": "h20_debug",
+            "_discovered": true,
+            "_discovered_status": "processing",
+        ]
+        let data = try JSONSerialization.data(withJSONObject: payload)
+        let event = try XCTUnwrap(HookEvent(from: data))
+
+        appState.handleEvent(event)
+
+        XCTAssertEqual(appState.sessions[codexAppSessionId]?.status, .running)
+        XCTAssertNil(appState.sessions["remote:h20_debug:\(providerSessionId)"])
+    }
+
+    func testRemoteCodexActiveDiscoveryCanWakeIdleMatchingCodexAppSession() throws {
+        let appState = AppState()
+        let providerSessionId = "019efde1-8c99-7143-b9b1-b84a9fda8889"
+        let codexAppSessionId = AppState.codexAppSessionPrefix + providerSessionId
+
+        var snapshot = SessionSnapshot()
+        snapshot.source = "codex"
+        snapshot.termBundleId = AppState.codexAppBundleId
+        snapshot.providerSessionId = providerSessionId
+        snapshot.status = .idle
+        snapshot.cwd = "/opt/tiger/alpha-seed"
+        appState.sessions[codexAppSessionId] = snapshot
+
+        let payload: [String: Any] = [
+            "hook_event_name": "SessionStart",
+            "session_id": providerSessionId,
+            "cwd": "/opt/tiger/alpha-seed",
+            "_source": "codex",
+            "_remote_host_id": "h20_debug",
+            "_remote_host_name": "h20_debug",
+            "_discovered": true,
+            "_discovered_status": "processing",
+        ]
+        let data = try JSONSerialization.data(withJSONObject: payload)
+        let event = try XCTUnwrap(HookEvent(from: data))
+
+        appState.handleEvent(event)
+
+        XCTAssertEqual(appState.sessions[codexAppSessionId]?.status, .processing)
+        XCTAssertNil(appState.sessions["remote:h20_debug:\(providerSessionId)"])
+    }
 }
