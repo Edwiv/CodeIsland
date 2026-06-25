@@ -150,10 +150,15 @@ build_mac() {
 
     ENTITLEMENTS="CodeIsland.entitlements"
 
-    # Use SIGN_ID env var, or auto-detect: prefer "Developer ID Application" for distribution,
-    # fall back to any valid identity, then ad-hoc. Keeping a stable certificate identity
-    # preserves macOS TCC permissions such as Bluetooth and automation across local updates.
-    if [ -z "${SIGN_ID:-}" ]; then
+    # Use SIGN_ID/SIGN_IDENTITY env var, or auto-detect a stable identity. The internal
+    # MacDist build is signed with Edwiv Personal App Distribution; prefer that locally so
+    # macOS TCC permissions (Bluetooth, folder access, Automation) survive app replacement.
+    SIGN_ID="${SIGN_ID:-${SIGN_IDENTITY:-}}"
+    PERSONAL_SIGN_ID="${CODEISLAND_PERSONAL_SIGN_IDENTITY:-Edwiv Personal App Distribution}"
+    if [ -z "$SIGN_ID" ] && [ "$NOTARIZE" != true ]; then
+        SIGN_ID=$(security find-identity -v -p codesigning | grep -F "\"$PERSONAL_SIGN_ID\"" | head -1 | sed 's/.*"\(.*\)".*/\1/' 2>/dev/null || true)
+    fi
+    if [ -z "$SIGN_ID" ]; then
         SIGN_ID=$(security find-identity -v -p codesigning | grep "Developer ID Application" | head -1 | sed 's/.*"\(.*\)".*/\1/' 2>/dev/null || true)
     fi
     if [ -z "$SIGN_ID" ]; then

@@ -86,6 +86,12 @@ curl -fsSL https://your-host.example/codeisland/install-certificate.sh | bash
 
 ## Publish
 
+Personal releases must be signed with the configured personal code-signing
+identity. The publish script now fails if that identity is missing; an ad-hoc
+build changes the app's designated requirement and can reset macOS TCC
+permissions. Use `CODEISLAND_ALLOW_ADHOC_SIGNING=1` only for throwaway testing
+that will not be installed over a daily app.
+
 Publish to a local webroot:
 
 ```bash

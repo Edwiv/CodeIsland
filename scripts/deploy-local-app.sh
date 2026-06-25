@@ -22,6 +22,7 @@ APP_NAME="CodeIsland"
 APP_BUNDLE="$REPO_ROOT/.build/release/$APP_NAME.app"
 STAGED_APP="/tmp/$APP_NAME.app"
 INSTALL_APP="/Applications/$APP_NAME.app"
+EXPECTED_SIGN_ID="${CODEISLAND_EXPECTED_SIGN_ID:-${SIGN_ID:-${SIGN_IDENTITY:-${CODEISLAND_PERSONAL_SIGN_IDENTITY:-Edwiv Personal App Distribution}}}}"
 
 cd "$REPO_ROOT"
 
@@ -34,6 +35,12 @@ codesign --verify --deep --strict --verbose=2 "$STAGED_APP"
 SIGN_DETAILS=$(codesign -dvvv "$STAGED_APP" 2>&1)
 if ! grep -q '^Authority=' <<<"$SIGN_DETAILS"; then
     echo "ERROR: $STAGED_APP is ad-hoc signed. Install a codesigning identity or set SIGN_ID." >&2
+    exit 1
+fi
+if [ -n "$EXPECTED_SIGN_ID" ] && [ "$EXPECTED_SIGN_ID" != "-" ] \
+    && ! grep -Fq "Authority=$EXPECTED_SIGN_ID" <<<"$SIGN_DETAILS"; then
+    echo "ERROR: $STAGED_APP was not signed with the expected stable identity: $EXPECTED_SIGN_ID" >&2
+    echo "$SIGN_DETAILS" | sed -n '/^Authority=/p;/^TeamIdentifier=/p' >&2
     exit 1
 fi
 

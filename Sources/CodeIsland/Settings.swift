@@ -542,9 +542,10 @@ class SettingsManager {
         set { defaults.set(newValue, forKey: SettingsKey.larkIncludeQuestions) }
     }
 
-    /// App Secret. Stored in UserDefaults like the rest of the config: a Keychain item would
-    /// be orphaned every time the (ad-hoc-signed) app is re-signed, silently breaking auto-start
-    /// on launch. This is the user's own machine and matches how all other settings are stored.
+    /// App Secret. Stored in UserDefaults like the rest of the config: a Keychain item can
+    /// be orphaned if the app is ever replaced with a different designated requirement,
+    /// silently breaking auto-start on launch. This is the user's own machine and matches
+    /// how all other settings are stored.
     var larkAppSecret: String {
         get { defaults.string(forKey: SettingsKey.larkAppSecret) ?? "" }
         set { defaults.set(newValue, forKey: SettingsKey.larkAppSecret) }

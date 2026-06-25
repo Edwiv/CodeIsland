@@ -19,12 +19,14 @@ toward (see `docs/refactor-sessionstate-reducer.md`).
 |---|---|
 | Build (debug) | `swift build` |
 | Build + run (release `.app`) | `./build.sh` then `open .build/release/CodeIsland.app` |
+| Deploy daily app | `scripts/deploy-local-app.sh` |
 | Test | `swift test` |
 | Run one test | `swift test --filter <TestCaseName>` |
 
 > Needs **full Xcode** (not just Command Line Tools) — the `#Preview` macros need
-> the `PreviewsMacros` plugin. Local ad-hoc running has iCloud-xattr and
-> hardened-runtime caveats; see the `build-run-recipe` memory.
+> the `PreviewsMacros` plugin. Daily installs must use the stable
+> `Edwiv Personal App Distribution` identity so macOS TCC permissions survive
+> app replacement; see `docs/internal-distribution.md`.
 
 ---
 
@@ -224,10 +226,40 @@ any of these, keep the conventions above.
 - **Codex app-server** plan-mode / user-input handling: `AppState+CodexAppServer.swift`.
 
 ### Build / run (this fork's daily app)
-The locally-used app is built **universal** and deployed to `/Applications`, **ad-hoc signed
-without hardened runtime** (the only config that runs reliably given the iCloud-stored
-`.build` xattrs) — see the `build-run-recipe` memory. `./build.sh` produces the bundle;
-a deploy step copies it to `/Applications`, strips xattrs, re-signs ad-hoc, and relaunches.
-Because the bundle is ad-hoc signed, **Sparkle auto-update may not apply cleanly** — to
-update, `git pull` and re-run the build + deploy rather than letting Sparkle replace it.
+The locally-used app is built **universal**, signed with hardened runtime, and deployed to
+`/Applications` with the stable internal MacDist identity:
 
+```text
+Edwiv Personal App Distribution
+```
+
+This identity is not optional for daily installs. macOS TCC permissions (Bluetooth, folder
+access, Automation, local network) are keyed by the app's designated requirement, not just
+`CFBundleIdentifier`. If a local build is accidentally signed with `Apple Development`,
+Developer ID, or ad-hoc, macOS treats it as a different app and asks for those permissions
+again.
+
+Use:
+
+```bash
+scripts/deploy-local-app.sh
+```
+
+The deploy script builds, stages outside iCloud, verifies the app is signed with the expected
+stable identity, backs up the current `/Applications/CodeIsland.app`, replaces it, verifies
+the installed bundle, and relaunches. If you intentionally need a different identity, pass
+`SIGN_ID=...` or `CODEISLAND_EXPECTED_SIGN_ID=...` explicitly; do not rely on keychain
+identity ordering.
+
+After any local deploy, the designated requirement should remain:
+
+```text
+identifier "com.codeisland.app" and certificate root = H"6d114892a54dd84512174a66844b83775152a0c9"
+```
+
+Verify with:
+
+```bash
+codesign -dvvv --entitlements :- /Applications/CodeIsland.app
+codesign -dr - /Applications/CodeIsland.app
+```

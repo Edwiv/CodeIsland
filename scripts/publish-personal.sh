@@ -15,7 +15,8 @@ Environment:
   SPARKLE_ED_ACCOUNT=codeisland-personal  Keychain account for Sparkle signing.
   CODEISLAND_SPARKLE_PUBLIC_KEY=...       Public key embedded in the app build.
   CODEISLAND_PERSONAL_SIGN_IDENTITY=...   Defaults to "CodeIsland Personal Code Signing".
-  CODEISLAND_REQUIRE_PERSONAL_SIGNING=1   Fail if the personal signing identity is missing.
+  CODEISLAND_REQUIRE_PERSONAL_SIGNING=0   Disable the default signing requirement only with CODEISLAND_ALLOW_ADHOC_SIGNING=1.
+  CODEISLAND_ALLOW_ADHOC_SIGNING=1        Explicitly allow ad-hoc output for throwaway testing only.
   CODEISLAND_CODESIGN_CERT_PATH=...       Public .cer copied to the published site.
   SPARKLE_ED_PRIVATE_KEY=...              Optional private key instead of Keychain.
   SPARKLE_ED_PRIVATE_KEY_FILE=...         Optional private key file instead of Keychain.
@@ -45,7 +46,8 @@ DMG_PATH="$REPO_ROOT/.build/CodeIsland.dmg"
 ARCH="${BUILD_ARCH:-arm64}"
 ACCOUNT="${SPARKLE_ED_ACCOUNT:-codeisland-personal}"
 SIGN_IDENTITY_TO_USE="${CODEISLAND_PERSONAL_SIGN_IDENTITY:-CodeIsland Personal Code Signing}"
-REQUIRE_PERSONAL_SIGNING="${CODEISLAND_REQUIRE_PERSONAL_SIGNING:-0}"
+REQUIRE_PERSONAL_SIGNING="${CODEISLAND_REQUIRE_PERSONAL_SIGNING:-1}"
+ALLOW_ADHOC_SIGNING="${CODEISLAND_ALLOW_ADHOC_SIGNING:-0}"
 DEFAULT_CERT_PATH="$REPO_ROOT/.build/personal-codesign/CodeIslandPersonalCodeSigning.cer"
 CERT_PATH="${CODEISLAND_CODESIGN_CERT_PATH:-}"
 if [[ -z "$CERT_PATH" && -f "$DEFAULT_CERT_PATH" ]]; then
@@ -77,12 +79,15 @@ BUILD_SIGN_ENV=(SKIP_SIGN=1)
 if security find-identity -v -p codesigning | grep -Fq "\"$SIGN_IDENTITY_TO_USE\""; then
     echo "==> Using personal signing identity: $SIGN_IDENTITY_TO_USE"
     BUILD_SIGN_ENV=(SIGN_IDENTITY="$SIGN_IDENTITY_TO_USE")
-elif [[ "$REQUIRE_PERSONAL_SIGNING" = "1" ]]; then
+elif [[ "$REQUIRE_PERSONAL_SIGNING" = "1" || "$ALLOW_ADHOC_SIGNING" != "1" ]]; then
     cat >&2 <<EOF
 ERROR: Personal signing identity not found: $SIGN_IDENTITY_TO_USE
 
 Run:
   ./scripts/create-personal-codesign-cert.sh
+
+For a throwaway ad-hoc build only:
+  CODEISLAND_ALLOW_ADHOC_SIGNING=1 CODEISLAND_REQUIRE_PERSONAL_SIGNING=0 $0 $VERSION $BASE_URL
 EOF
     exit 1
 else
