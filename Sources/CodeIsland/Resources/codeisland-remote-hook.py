@@ -6,7 +6,7 @@ import subprocess
 import sys
 import time
 
-VERSION = "0.4.1"
+VERSION = "0.4.2"
 # Per-user socket path (#193): CodeIsland injects CODEISLAND_SOCKET_PATH via the hook
 # command, but fall back to a uid-scoped path so multiple users on a shared host never
 # collide on a single /tmp/codeisland.sock.
@@ -337,6 +337,11 @@ def _scan_codex_jsonl(path):
                     event_type = data.get("type")
                     if event_type == "task_started":
                         terminal_status = None
+                    elif event_type == "user_message":
+                        # A new turn may be appended before Codex records task_started. If the
+                        # previous line left us at task_complete, don't carry that terminal state
+                        # into the new active turn.
+                        terminal_status = None
                     elif event_type == "task_complete":
                         terminal_status = "completed"
                     elif event_type == "turn_aborted":
@@ -353,6 +358,12 @@ def _scan_codex_jsonl(path):
                     continue
 
                 if msg_type == "response_item":
+                    response_type = data.get("type")
+                    if response_type in ("function_call", "function_call_output", "reasoning"):
+                        # Newer Codex JSONL can append tool/reasoning items after an early
+                        # task_complete marker while the turn is still running. Treat any such
+                        # post-terminal activity as live so discovery emits _discovered_status.
+                        terminal_status = None
                     role = data.get("role")
                     content = data.get("content")
                     text = ""
