@@ -323,13 +323,18 @@ public final class JSONLTailer: @unchecked Sendable {
         }
 
         switch type {
-        case "user":
+        case "user", "USER_INPUT":
             if let text = extractText(from: message["content"]) {
                 delta.lastUserPrompt = text
             }
-        case "assistant":
+        case "assistant", "PLANNER_RESPONSE":
             if let text = extractText(from: message["content"]) {
                 delta.lastAssistantMessage = text
+            } else if let thinking = message["thinking"] as? String {
+                let trimmed = thinking.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty {
+                    delta.lastAssistantMessage = trimmed
+                }
             }
             // Capture token usage for the context-window / token chips (#5). Present on
             // Claude-style transcripts; absent for agents that don't write `message.usage`.
@@ -410,6 +415,10 @@ public final class JSONLTailer: @unchecked Sendable {
                             if hasExactValue(ptr, at: valueStart, total: total, expect: userBytes) {
                                 return .user
                             }
+                        case 0x55:  // 'U'
+                            if hasExactValue(ptr, at: valueStart, total: total, expect: userInputBytes) {
+                                return .user
+                            }
                         case 0x61:  // 'a'
                             if hasExactValue(ptr, at: valueStart, total: total, expect: assistantBytes) {
                                 return .assistant
@@ -417,6 +426,10 @@ public final class JSONLTailer: @unchecked Sendable {
                         case 0x74:  // 't' — Codex `"type":"token_count"`
                             if hasExactValue(ptr, at: valueStart, total: total, expect: tokenCountBytes) {
                                 return .codexTokenCount
+                            }
+                        case 0x50:  // 'P'
+                            if hasExactValue(ptr, at: valueStart, total: total, expect: plannerResponseBytes) {
+                                return .assistant
                             }
                         default:
                             break
@@ -439,6 +452,8 @@ public final class JSONLTailer: @unchecked Sendable {
     private static let userBytes: [UInt8] = Array(#"user""#.utf8)
     private static let assistantBytes: [UInt8] = Array(#"assistant""#.utf8)
     private static let tokenCountBytes: [UInt8] = Array(#"token_count""#.utf8)
+    private static let userInputBytes: [UInt8] = Array(#"USER_INPUT""#.utf8)
+    private static let plannerResponseBytes: [UInt8] = Array(#"PLANNER_RESPONSE""#.utf8)
 
     private static func hasExactValue(
         _ ptr: UnsafePointer<UInt8>,
@@ -447,7 +462,7 @@ public final class JSONLTailer: @unchecked Sendable {
         expect: [UInt8]
     ) -> Bool {
         guard start + expect.count <= total else { return false }
-        for offset in 0..<expect.count where ptr[start + offset] != expect[offset] {
+        for offset in 0..<expect.count where ptr[start + offset] != expect[expect.startIndex + offset] {
             return false
         }
         return true
@@ -457,7 +472,12 @@ public final class JSONLTailer: @unchecked Sendable {
     /// either a bare string or an array of content blocks.
     public static func extractText(from content: Any?) -> String? {
         if let raw = content as? String {
-            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            var text = raw
+            if let startRange = text.range(of: "<USER_REQUEST>"),
+               let endRange = text.range(of: "</USER_REQUEST>", range: startRange.upperBound..<text.endIndex) {
+                text = String(text[startRange.upperBound..<endRange.lowerBound])
+            }
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
             return trimmed.isEmpty ? nil : trimmed
         }
         if let blocks = content as? [[String: Any]] {

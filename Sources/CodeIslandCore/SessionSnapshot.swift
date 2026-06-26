@@ -950,8 +950,11 @@ public func reduceEvent(
         if let cwd = event.rawJSON["cwd"] as? String, !cwd.isEmpty { sessions[sessionId]?.cwd = cwd }
         if let model = event.rawJSON["model"] as? String, !model.isEmpty { sessions[sessionId]?.model = model }
         if let ppid = event.rawJSON["_ppid"] as? Int, ppid > 0 {
-            sessions[sessionId]?.cliPid = pid_t(ppid)
-            sessions[sessionId]?.cliStartTime = nil
+            let newPid = pid_t(ppid)
+            if sessions[sessionId]?.cliPid != newPid {
+                sessions[sessionId]?.cliPid = newPid
+                sessions[sessionId]?.cliStartTime = nil
+            }
         }
         if let source = SessionSnapshot.resolvedSource(from: event.rawJSON) {
             sessions[sessionId]?.source = source
@@ -1216,8 +1219,11 @@ public func extractMetadata(into sessions: inout [String: SessionSnapshot], sess
         applyEnvMetadata(into: &sessions, sessionId: sessionId, env: env)
     }
     if let ppid = event.rawJSON["_ppid"] as? Int, ppid > 0 {
-        sessions[sessionId]?.cliPid = pid_t(ppid)
-        sessions[sessionId]?.cliStartTime = nil
+        let newPid = pid_t(ppid)
+        if sessions[sessionId]?.cliPid != newPid {
+            sessions[sessionId]?.cliPid = newPid
+            sessions[sessionId]?.cliStartTime = nil
+        }
     }
     if let source = SessionSnapshot.resolvedSource(from: event.rawJSON) {
         sessions[sessionId]?.source = source

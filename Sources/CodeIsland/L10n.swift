@@ -16,6 +16,7 @@ final class L10n: ObservableObject {
         if language == "system" {
             let preferred = Locale.preferredLanguages.first ?? "en"
             if preferred.hasPrefix("zh") { return "zh" }
+            if preferred.hasPrefix("de") { return "de" }
             if preferred.hasPrefix("ja") { return "ja" }
             if preferred.hasPrefix("tr") { return "tr" }
             if preferred.hasPrefix("ko") { return "ko" }
@@ -33,6 +34,7 @@ final class L10n: ObservableObject {
     static let strings: [String: [String: String]] = [
         "en": en,
         "zh": zh,
+        "de": de,
         "ja": ja,
         "ko": ko,
         "tr": tr,
@@ -456,6 +458,326 @@ final class L10n: ObservableObject {
         "idle_sessions_hide": "Hide idle sessions",
     ]
 
+    private static let de: [String: String] = en.merging([
+        // Settings pages
+        "general": "Allgemein",
+        "behavior": "Verhalten",
+        "appearance": "Darstellung",
+        "mascots": "Maskottchen",
+        "sound": "Ton",
+        "remote": "Remote",
+        "hooks": "Hooks",
+        "about": "Info",
+
+        // Language
+        "language": "Sprache",
+        "system_language": "System",
+
+        // General
+        "launch_at_login": "Beim Anmelden starten",
+        "allow_horizontal_drag": "Horizontales Ziehen erlauben",
+        "allow_horizontal_drag_desc": "Panel entlang der Menüleiste nach links oder rechts ziehen",
+        "display": "Display",
+        "auto": "Automatisch",
+        "builtin_display": "Integriertes Display",
+        "notch": "(Notch)",
+
+        // Behavior
+        "display_section": "Anzeige",
+        "hide_in_fullscreen": "Im Vollbild ausblenden",
+        "hide_in_fullscreen_desc": "Panel automatisch ausblenden, wenn eine App in den Vollbildmodus wechselt",
+        "hide_when_no_session": "Ohne aktive Sitzung automatisch ausblenden",
+        "hide_when_no_session_desc": "Panel vollständig ausblenden, wenn keine AI-Agenten laufen",
+        "smart_suppress": "Intelligent unterdrücken",
+        "smart_suppress_desc": "Panel nicht automatisch erweitern, wenn der Terminal-Tab des Agenten im Vordergrund ist",
+        "collapse_on_mouse_leave": "Beim Verlassen mit der Maus einklappen",
+        "collapse_on_mouse_leave_desc": "Erweitertes Panel wieder zur Notch einklappen, wenn die Maus es verlässt",
+        "auto_collapse_after_session_jump": "Nach Sitzungswechsel automatisch einklappen",
+        "auto_collapse_after_session_jump_desc": "Panel einklappen, nachdem eine Sitzung angeklickt und erfolgreich zu ihrem Terminal/Client gewechselt wurde",
+        "auto_expand_on_completion": "Panel nach Agent-Abschluss automatisch erweitern",
+        "auto_expand_on_completion_desc": "Panel kurz erweitern, wenn ein Agent oder Subagent fertig ist; deaktivieren, um CodeIsland kompakt zu halten",
+        "haptic_on_hover": "Haptisches Feedback beim Hover",
+        "haptic_on_hover_desc": "Trackpad-Feedback auslösen, wenn der Mauszeiger über der Notch ist",
+        "haptic_light": "Leicht",
+        "haptic_medium": "Mittel",
+        "haptic_strong": "Stark",
+        "shortcuts": "Kurzbefehle",
+        "shortcut_recording": "Aufzeichnung...",
+        "shortcut_none": "Nicht festgelegt",
+        "shortcut_togglePanel": "Panel ein-/ausblenden",
+        "shortcut_togglePanel_desc": "CodeIsland-Panel öffnen oder schließen",
+        "shortcut_approve": "Genehmigen",
+        "shortcut_approve_desc": "Aktuelle Berechtigungsanfrage genehmigen",
+        "shortcut_approveAlways": "Immer genehmigen",
+        "shortcut_approveAlways_desc": "Genehmigen und für diese Sitzung merken",
+        "shortcut_deny": "Ablehnen",
+        "shortcut_deny_desc": "Aktuelle Berechtigungsanfrage ablehnen",
+        "shortcut_skipQuestion": "Frage überspringen",
+        "shortcut_skipQuestion_desc": "Aktuelle Frage überspringen",
+        "shortcut_jumpToTerminal": "Zum Terminal wechseln",
+        "shortcut_jumpToTerminal_desc": "Zum Terminal der aktiven Sitzung wechseln",
+        "shortcut_conflict": "Konflikt mit",
+        "sessions": "Sitzungen",
+        "session_cleanup": "Bereinigung inaktiver Sitzungen",
+        "session_cleanup_desc": "Sitzungen ohne Aktivität nach der festgelegten Dauer automatisch entfernen",
+        "no_cleanup": "Nie",
+        "10_minutes": "10 Minuten",
+        "30_minutes": "30 Minuten",
+        "1_hour": "1 Stunde",
+        "2_hours": "2 Stunden",
+        "rotation_interval": "Sitzungswechsel-Intervall",
+        "rotation_interval_desc": "Wie oft die kompakte Leiste zwischen aktiven Sitzungen wechselt",
+        "3_seconds": "3 Sekunden",
+        "5_seconds": "5 Sekunden",
+        "8_seconds": "8 Sekunden",
+        "10_seconds": "10 Sekunden",
+        "tool_history_limit": "Tool-Verlaufslimit",
+        "tool_history_limit_desc": "Maximale Anzahl der zuletzt angezeigten Tool-Aufrufe pro Sitzung",
+        "plugin_session_mode": "Agent-Sub-Sitzungen",
+        "plugin_session_mode_desc": "Darstellung von durch Agenten gestarteten Kind-Sitzungen, einschließlich Codex-Subagenten und Plugin-Hook-Ereignissen (z. B. omo in OpenCode)",
+        "plugin_session_mode_separate": "Separat anzeigen",
+        "plugin_session_mode_merge": "In Hauptsitzung zusammenführen",
+        "plugin_session_mode_hide": "Ausblenden",
+
+        // Auto-approve tools
+        "auto_approve_tools": "Tools automatisch genehmigen",
+        "auto_approve_tools_desc": "Diese internen Tools werden ohne Bestätigungsdialog automatisch genehmigt. Deaktiviere Tools, die du manuell prüfen möchtest.",
+        "auto_approve_TaskCreate": "Neue Aufgabe erstellen",
+        "auto_approve_TaskUpdate": "Bestehende Aufgabe aktualisieren",
+        "auto_approve_TaskGet": "Aufgabendetails abrufen",
+        "auto_approve_TaskList": "Alle Aufgaben auflisten",
+        "auto_approve_TaskOutput": "Aufgabenausgabe abrufen",
+        "auto_approve_TaskStop": "Laufende Aufgabe stoppen",
+        "auto_approve_TodoRead": "Todo-Liste lesen",
+        "auto_approve_TodoWrite": "Todo-Liste schreiben",
+        "auto_approve_EnterPlanMode": "Planmodus starten",
+        "auto_approve_ExitPlanMode": "Planmodus verlassen und Genehmigung anfordern",
+
+        // Excluded hook cwd
+        "excluded_hook_cwd_title": "Hooks aus Pfaden ignorieren",
+        "excluded_hook_cwd_desc": "Kommagetrennte Teilstrings. Hook-Ereignisse, deren Arbeitsverzeichnis einen davon enthält, werden still verworfen - nützlich zum Filtern von Hintergrund-Plugins wie claude-mem. Beispiel: .claude-mem,.cache/agents",
+        "excluded_hook_cwd_placeholder": "z. B. .claude-mem,.cache/agents",
+
+        // Webhook forwarding
+        "webhook_title": "Webhook-Weiterleitung",
+        "webhook_desc": "Hook-Ereignisse als JSON an einen externen HTTP-Endpunkt senden. Nützlich, um Agent-Aktivität über generische Webhooks an DingTalk / Lark / Slack weiterzugeben. Fehler werden still ignoriert.",
+        "webhook_enable": "Webhook-Weiterleitung aktivieren",
+        "webhook_url_placeholder": "https://dein.webhook.example/hook",
+        "webhook_filter_placeholder": "Optional: Stop,SessionEnd,PermissionRequest",
+        "webhook_filter_hint": "Kommagetrennte Ereignisnamen; leer = alle Ereignisse weiterleiten. Normalisierte Namen (PreToolUse) und rohe Namen (pre_tool_use) werden unterstützt.",
+
+        // Appearance
+        "preview": "Vorschau",
+        "panel": "Panel",
+        "max_visible_sessions": "Maximal sichtbare Sitzungen",
+        "max_visible_sessions_desc": "Sitzungen über diesem Limit werden scrollbar",
+        "collapsed_width_scale": "Island-Breite",
+        "collapsed_width_scale_desc": "Breite der eingeklappten Island auf Displays ohne Notch skalieren",
+        "notch_height_mode": "Höhe der oberen Leiste",
+        "notch_height_mode_desc": "Panel an der echten Notch-Höhe, der Menüleistenhöhe oder einem eigenen Wert ausrichten",
+        "notch_height_match_notch": "An Notch-Höhe anpassen",
+        "notch_height_match_menubar": "An Menüleistenhöhe anpassen",
+        "notch_height_custom": "Eigene Höhe",
+        "custom_notch_height": "Eigene Höhe",
+        "default": "Standard",
+        "content": "Inhalt",
+        "content_font_size": "Schriftgröße des Inhalts",
+        "11pt_default": "11 pt (Standard)",
+        "ai_reply_lines": "AI-Antwortzeilen",
+        "1_line_default": "1 Zeile (Standard)",
+        "2_lines": "2 Zeilen",
+        "3_lines": "3 Zeilen",
+        "5_lines": "5 Zeilen",
+        "unlimited": "Unbegrenzt",
+        "show_agent_details": "Agent-Aktivitätsdetails anzeigen",
+        "show_tool_status": "Detaillierte Tool-Aktivität in der kompakten Leiste",
+
+        // Mascots
+        "preview_status": "Statusvorschau",
+        "processing": "Verarbeitung",
+        "idle": "Inaktiv",
+        "waiting_approval": "Wartet auf Genehmigung",
+        "mascot_speed": "Animationsgeschwindigkeit",
+        "speed_off": "Aus",
+        "speed_slow": "0,5x Langsam",
+        "speed_normal": "1x Normal",
+        "speed_fast": "1,5x Schnell",
+        "speed_very_fast": "2x Sehr schnell",
+        "default_mascot": "Standard-Maskottchen",
+        "default_mascot_desc": "Wird in der Island angezeigt, wenn keine Sitzungen aktiv sind",
+
+        // Sound
+        "enable_sound": "Soundeffekte aktivieren",
+        "volume": "Lautstärke",
+        "session_start": "Sitzungsstart",
+        "new_claude_session": "Neue Claude-Code-Sitzung",
+        "task_complete": "Aufgabe abgeschlossen",
+        "ai_completed_reply": "AI hat diese Antwort abgeschlossen",
+        "task_error": "Aufgabenfehler",
+        "tool_or_api_error": "Tool-Fehler oder API-Fehler",
+        "system_section": "System",
+        "boot_sound": "Startsound",
+        "boot_sound_desc": "Beim Start von CodeIsland einen Jingle abspielen",
+        "interaction": "Interaktion",
+        "approval_needed": "Genehmigung erforderlich",
+        "waiting_approval_desc": "Wartet auf Berechtigungsgenehmigung oder Antwort",
+        "task_confirmation": "Aufgabenbestätigung",
+        "you_sent_message": "Du hast eine Nachricht gesendet",
+        "custom_sound": "Eigener Sound",
+        "choose_sound_file": "Sounddatei auswählen",
+        "reset_to_default": "Auf Standard zurücksetzen",
+        "custom_sound_set": "Eigen: %@",
+
+        // Hooks
+        "cli_status": "CLI-Status",
+        "activated": "Aktiviert",
+        "not_installed": "Nicht installiert",
+        "not_detected": "Nicht erkannt",
+        "management": "Verwaltung",
+        "reinstall": "Neu installieren",
+        "uninstall": "Deinstallieren",
+        "hooks_installed": "Hooks erfolgreich installiert",
+        "install_failed": "Installation fehlgeschlagen",
+        "hooks_uninstalled": "Hooks deinstalliert",
+        "remote_hosts": "Remote-Hosts",
+        "remote_hosts_empty": "Noch keine Remote-Hosts. Füge unten einen hinzu, um Sitzungen per SSH zu überwachen.",
+        "add_remote_host": "Remote-Host hinzufügen",
+        "remote_name": "Anzeigename",
+        "remote_host": "Host oder SSH-Alias",
+        "remote_user": "SSH-Benutzer (optional)",
+        "remote_port": "SSH-Port (optional)",
+        "remote_identity": "Identity-Datei (optional)",
+        "remote_auth_socket": "SSH_AUTH_SOCK (optional)",
+        "remote_auth_socket_placeholder": "~/.1password/agent.sock",
+        "remote_auto_connect": "Beim Start automatisch verbinden",
+        "remote_add_button": "Host hinzufügen",
+        "remote_hint": "Das Host-Feld kann ein normaler Hostname oder ein Alias aus ~/.ssh/config sein. CodeIsland installiert ein kleines Remote-Hook-Skript und leitet Ereignisse per SSH weiter.",
+        "remote_connect": "Verbinden",
+        "remote_connecting": "Verbindung wird hergestellt...",
+        "remote_connected": "Verbunden",
+        "remote_disconnected": "Getrennt",
+        "remote_disconnect": "Trennen",
+        "remote_remove": "Entfernen",
+
+        // Buddy
+        "buddy": "Buddy",
+        "buddy_enable_bluetooth": "Buddy über Bluetooth verbinden",
+        "buddy_connection_status": "Verbindung",
+        "buddy_reconnect": "Erneut verbinden",
+        "buddy_status_disabled": "Nicht verbunden",
+        "buddy_status_bluetooth_off": "Bluetooth ist aus",
+        "buddy_status_bluetooth_denied": "Bluetooth-Berechtigung verweigert",
+        "buddy_status_bluetooth_unsupported": "Bluetooth ist auf diesem Mac nicht verfügbar",
+        "buddy_status_bluetooth_resetting": "Bluetooth wird zurückgesetzt",
+        "buddy_status_scanning": "Suche nach Buddy...",
+        "buddy_status_connecting": "Verbindung wird hergestellt...",
+        "buddy_status_connected": "Verbunden",
+        "buddy_status_pairing": "Koppeln...",
+        "buddy_status_pair_waiting_confirm": "BOOT auf Buddy drücken",
+        "buddy_status_pair_rejected": "Kopplung nicht abgeschlossen",
+        "buddy_pair_confirm_hint": "Drücke die BOOT-Taste auf Buddy, um die Kopplung zu bestätigen",
+        "buddy_pair_rejected_hint": "Kopplung wurde abgelehnt oder ist abgelaufen. Wenn dieser Buddy mit einem anderen Mac gekoppelt ist, halte BOOT 3 s gedrückt, um ihn zurückzusetzen.",
+        "buddy_legacy_firmware_hint": "Im Legacy-Firmware-Modus verbunden. Installiere die neueste Buddy-Firmware, um Kopplung und reichere Statuspanels zu aktivieren.",
+        "buddy_status_reconnecting": "Erneute Verbindung in %d s...",
+        "buddy_status_no_selection": "Kein Buddy ausgewählt",
+        "buddy_status_searching_selected": "Warte auf ausgewählten Buddy...",
+        "buddy_select_section": "Buddy auswählen",
+        "buddy_selected_label": "Ausgewählt",
+        "buddy_no_devices": "Noch keine Buddies gefunden. Stelle sicher, dass dein Buddy eingeschaltet und in der Nähe ist.",
+        "buddy_refresh": "Aktualisieren",
+        "buddy_scanning": "Scannen...",
+        "buddy_forget": "Diesen Buddy vergessen",
+        "buddy_signal": "Signal",
+        "buddy_sync": "Sync",
+        "buddy_sync_interval": "Sync-Intervall",
+        "buddy_seconds_format": "%.0f s",
+        "buddy_sync_desc": "Buddy bleibt aktiv, indem er regelmäßig den aktuellen Island-Status empfängt. Kürzere Intervalle reagieren schneller und erzeugen etwas mehr Bluetooth-Verkehr.",
+        "buddy_display": "Display",
+        "buddy_brightness": "Bildschirmhelligkeit",
+        "buddy_brightness_desc": "Bildschirmhelligkeit von Buddy anpassen. Das Gerät dimmt sich im Leerlauf weiterhin selbst.",
+        "buddy_screen_orientation": "Bildschirmausrichtung",
+        "buddy_screen_orientation_up": "Oben",
+        "buddy_screen_orientation_down": "Unten",
+        "buddy_screen_orientation_desc": "Physische Ausrichtung von Buddy wählen. Unten dreht den Bildschirm um 180 Grad.",
+        "buddy_desc": "Buddy spiegelt das aktuelle Island-Maskottchen und den Status per Bluetooth, und seine Taste kann das passende Agent-Terminal fokussieren.",
+        "apple_companion": "iPhone Buddy",
+        "apple_companion_enable": "iPhone Buddy erlauben, diesen Mac zu finden",
+        "apple_companion_status": "Verbindung",
+        "apple_companion_status_off": "Aus",
+        "apple_companion_status_waiting": "Wartet auf iPhone",
+        "apple_companion_status_connected": "Verbunden",
+        "apple_companion_no_devices": "Kein iPhone Buddy verbunden",
+        "apple_companion_sync_interval": "Sync-Intervall",
+        "apple_companion_restart": "iPhone Buddy neu starten",
+        "apple_companion_desc": "Spiegelt den CodeIsland-Status im Vordergrund über das lokale Netzwerk zur iPhone-App und sendet im Hintergrund leichte Bluetooth-Zusammenfassungen für Live Activity und Apple-Watch-Aktualisierungen.",
+
+        // About
+        "about_desc1": "Echtzeit-Statuspanel für AI-Coding-Agenten unter macOS",
+        "about_desc2": "Unterstützt 11 CLI/IDE-Tools über Unix-Socket-IPC",
+
+        // Window
+        "settings_title": "CodeIsland-Einstellungen",
+
+        // Menu
+        "settings_ellipsis": "Einstellungen...",
+        "check_for_updates": "Nach Updates suchen...",
+        "export_diagnostics": "Diagnose exportieren...",
+        "export_diagnostics_desc": "Erstellt für Fehlerberichte eine ZIP-Datei mit Logs, Einstellungen, Sitzungsstatus und aktuellen Hook-Ereignissen (Ereignisnamen, Quellen, erste 80 Zeichen von Prompts)",
+        "reinstall_hooks": "Hooks neu installieren",
+        "remove_hooks": "Hooks entfernen",
+        "quit": "Beenden",
+
+        // Update
+        "update_available_title": "Update verfügbar",
+        "update_available_body": "CodeIsland %@ ist verfügbar (aktuell: %@). Möchtest du es herunterladen?",
+        "download_update": "Herunterladen",
+        "later": "Später",
+        "no_update_title": "Aktuell",
+        "no_update_body": "CodeIsland %@ ist die neueste Version.",
+        "ok": "OK",
+        "update_now": "Jetzt aktualisieren",
+        "update_downloading": "Update wird heruntergeladen...",
+        "update_failed_title": "Update fehlgeschlagen",
+        "update_failed_body": "Update konnte nicht installiert werden: %@",
+        "update_manual_download": "Manuell herunterladen",
+        "update_installing": "Update wird installiert...",
+        "update_retry": "Erneut versuchen",
+        "update_homebrew_title": "Update verfügbar",
+        "update_homebrew_body": "CodeIsland %@ ist verfügbar. Da du über Homebrew installiert hast, führe bitte aus:",
+        "update_homebrew_command": "brew upgrade codeisland",
+        "update_copy_command": "Befehl kopieren",
+
+        // NotchPanel
+        "mute": "Stumm",
+        "enable_sound_tooltip": "Ton aktivieren",
+        "settings": "Einstellungen",
+        "deny": "ABLEHNEN",
+        "dismiss": "AUSBLENDEN",
+        "allow_once": "EINMAL ERLAUBEN",
+        "always": "IMMER",
+        "approval_queue_label": "Genehmigung %d/%d: %@",
+        "approval_details_expand": "Details",
+        "approval_details_collapse": "Einklappen",
+        "type_answer": "Antwort eingeben...",
+        "skip": "ÜBERSPRINGEN",
+        "back": "ZURÜCK",
+        "confirm": "BESTÄTIGEN",
+        "submit": "SENDEN",
+        "open_path": "Öffnen",
+        "copy_session_id": "Sitzungs-ID kopieren",
+
+        // Session grouping
+        "status_running": "Läuft",
+        "status_waiting": "Wartet",
+        "status_processing": "Verarbeitung",
+        "status_idle": "Inaktiv",
+        "other": "Andere",
+        "n_sessions": "Sitzungen",
+        "scroll_for_more": "Für mehr scrollen",
+        "scroll_hidden": "weitere unten",
+        "lines": "Zeilen",
+    ]) { _, localized in localized }
+
     private static let zh: [String: String] = [
         // Settings pages
         "general": "通用",
@@ -586,7 +908,7 @@ final class L10n: ObservableObject {
         "max_visible_sessions": "最大显示会话数",
         "max_visible_sessions_desc": "超出数量的会话将通过滚动查看",
         "collapsed_width_scale": "灵动岛宽度",
-        "collapsed_width_scale_desc": "调整灵动岛的收起宽度",
+        "collapsed_width_scale_desc": "仅调整无刘海显示器上的收起宽度",
         "notch_height_mode": "顶部高度对齐",
         "notch_height_mode_desc": "让面板与真实 notch 高度、菜单栏高度或自定义值对齐",
         "notch_height_match_notch": "对齐 notch 高度",
@@ -875,7 +1197,7 @@ final class L10n: ObservableObject {
         "idle_sessions_hide": "收起空闲会话",
     ]
 
-    private static let ja: [String: String] = [
+    private static let ja: [String: String] = en.merging([
         // Settings pages
         "general": "一般",
         "behavior": "動作",
@@ -1202,9 +1524,9 @@ final class L10n: ObservableObject {
         "scroll_for_more": "さらに表示するにはスクロール",
         "scroll_hidden": "下にさらにあります",
         "lines": "行",
-    ]
+    ]) { _, localized in localized }
 
-    private static let ko: [String: String] = [
+    private static let ko: [String: String] = en.merging([
         // Settings pages
         "general": "일반",
         "behavior": "동작",
@@ -1531,9 +1853,9 @@ final class L10n: ObservableObject {
         "scroll_for_more": "더 보려면 스크롤",
         "scroll_hidden": "아래에 더 있음",
         "lines": "줄",
-    ]
+    ]) { _, localized in localized }
 
-    private static let tr: [String: String] = [
+    private static let tr: [String: String] = en.merging([
         // Settings pages
         "general": "Genel",
         "behavior": "Davranış",
@@ -1860,5 +2182,5 @@ final class L10n: ObservableObject {
         "scroll_for_more": "Daha fazla için kaydır",
         "scroll_hidden": "aşağıda",
         "lines": "satır",
-    ]
+    ]) { _, localized in localized }
 }

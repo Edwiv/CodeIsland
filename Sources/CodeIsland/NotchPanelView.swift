@@ -2,9 +2,33 @@ import SwiftUI
 import CodeIslandCore
 
 enum NotchWidthMetrics {
-    static func effectiveNotchWidth(notchW: CGFloat, collapsedWidthScale: Int) -> CGFloat {
+    static func effectiveNotchWidth(notchW: CGFloat, collapsedWidthScale: Int, hasNotch: Bool) -> CGFloat {
+        if hasNotch { return notchW }
         let clampedScale = max(50, min(collapsedWidthScale, 150))
         return notchW * CGFloat(clampedScale) / 100.0
+    }
+}
+
+enum ToolNameDisplay {
+    static let compactMaxCharacters = 24
+    static let compactMaxWidth: CGFloat = 120
+
+    static func compact(_ tool: String, maxCharacters: Int = compactMaxCharacters) -> String {
+        let trimmed = tool.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard maxCharacters > 3, trimmed.count > maxCharacters else { return trimmed }
+
+        let components = trimmed.components(separatedBy: "__")
+        let meaningfulSuffix: String?
+        if components.count > 1, let last = components.last, !last.isEmpty {
+            meaningfulSuffix = last
+        } else {
+            meaningfulSuffix = nil
+        }
+        let minimumPrefixCount = max(1, min(4, maxCharacters - 4))
+        let suffixBudget = max(1, maxCharacters - minimumPrefixCount - 3)
+        let suffixCount = meaningfulSuffix.map { min($0.count, suffixBudget) } ?? max(4, maxCharacters / 2)
+        let prefixCount = max(1, maxCharacters - suffixCount - 3)
+        return "\(trimmed.prefix(prefixCount))...\(trimmed.suffix(suffixCount))"
     }
 }
 
@@ -62,11 +86,12 @@ struct NotchPanelView: View {
     /// Minimum wing width needed to display compact bar content
     private var compactWingWidth: CGFloat { mascotSize + 14 }
 
-    /// Effective island width — applies user scale on both notch and non-notch screens.
+    /// Effective island width — scale only applies to simulated notches on non-notch screens.
     private var effectiveNotchW: CGFloat {
         NotchWidthMetrics.effectiveNotchWidth(
             notchW: notchW,
-            collapsedWidthScale: collapsedWidthScale
+            collapsedWidthScale: collapsedWidthScale,
+            hasNotch: hasNotch
         )
     }
 
@@ -433,12 +458,14 @@ private struct CompactLeftWing: View {
 
                     // On notch screens, show tool name only (no description, space is tight)
                     if hasNotch, showToolStatus, let tool = shownTool {
-                        Text(tool)
+                        Text(ToolNameDisplay.compact(tool))
                             .font(.system(size: 10, weight: .medium, design: .monospaced))
                             .foregroundStyle(toolStatusColor(tool))
                             .lineLimit(1)
-                            .fixedSize()
+                            .truncationMode(.middle)
+                            .frame(maxWidth: ToolNameDisplay.compactMaxWidth, alignment: .leading)
                             .transition(.opacity)
+                            .help(tool)
                     }
                 } else {
                     // Mascot off: replace the static icon with an always-on readout of what
@@ -708,8 +735,9 @@ private struct CompactToolStatus: View {
 
             // Tool status or thinking indicator
             if let tool = shownTool {
-                TypingIndicator(fontSize: 11, label: tool, bright: true, color: toolStatusColor(tool))
+                TypingIndicator(fontSize: 11, label: ToolNameDisplay.compact(tool, maxCharacters: 32), bright: true, color: toolStatusColor(tool))
                     .id("tool-\(tool)-\(appState.rotatingSessionId ?? "")")
+                    .help(tool)
                 if let desc = shownDesc {
                     MorphText(
                         text: shortDesc(desc),
@@ -2902,6 +2930,7 @@ private let cliIconFiles: [String: String] = [
     "qwen": "qwen",
     "kimi": "kimi",
     "pi": "pi",
+    "omp": "pi",
     "opencode": "opencode",
     "cline": "cline",
 ]

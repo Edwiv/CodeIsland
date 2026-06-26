@@ -315,6 +315,48 @@ final class CompanionConnection: NSObject, ObservableObject {
                 question: nil,
                 updatedAt: Date()
             )
+        case "multi":
+            let now = Date()
+            let previews = [
+                CompanionSessionPreview(sessionId: "s1", source: "claude", status: .waitingQuestion, toolName: "AskUserQuestion", workspaceName: "code-island", message: "你想看什么类型的小说？", messages: [
+                    CompanionMessagePreview(role: .user, text: "帮我生成一篇长篇小说"),
+                    CompanionMessagePreview(role: .assistant, text: "好的，先确认**类型**和篇幅。你想看什么类型的小说？")
+                ], updatedAt: now),
+                CompanionSessionPreview(sessionId: "s2", source: "codex", status: .processing, toolName: "WebSearch", workspaceName: "apple-companion", message: "正在检索资料", messages: [
+                    CompanionMessagePreview(role: .user, text: "查一下 SwiftUI `safeAreaInsets` 的用法"),
+                    CompanionMessagePreview(role: .assistant, text: "正在检索资料，稍等。")
+                ], updatedAt: now),
+                CompanionSessionPreview(sessionId: "s3", source: "cursor", status: .running, toolName: "Edit", workspaceName: "ios", message: "正在修改 ContentView", messages: [
+                    CompanionMessagePreview(role: .user, text: "把会话卡改成 notch 风格"),
+                    CompanionMessagePreview(role: .assistant, text: "正在修改 `ContentView.swift`，对齐状态着色与多轮转写。")
+                ], updatedAt: now),
+                CompanionSessionPreview(sessionId: "s4", source: "gemini", status: .waitingApproval, toolName: "Bash", workspaceName: "scripts", message: "请求执行命令", messages: [
+                    CompanionMessagePreview(role: .assistant, text: "请求执行 `npm run build`，是否批准？")
+                ], updatedAt: now),
+                CompanionSessionPreview(sessionId: "s5", source: "kimi", status: .idle, toolName: nil, workspaceName: "docs", message: nil, updatedAt: now),
+                CompanionSessionPreview(sessionId: "s6", source: "qwen", status: .processing, toolName: "Read", workspaceName: "server", message: "读取配置", messages: [
+                    CompanionMessagePreview(role: .user, text: "看下服务端配置"),
+                    CompanionMessagePreview(role: .assistant, text: "正在读取 `config.yaml`…")
+                ], updatedAt: now)
+            ]
+            return CompanionStatePayload(
+                version: 1,
+                sequence: resolvedSequence,
+                sessionId: "mock-multi",
+                source: "claude",
+                status: .processing,
+                toolName: "AskUserQuestion",
+                workspaceName: "code-island",
+                messages: [
+                    CompanionMessagePreview(role: .user, text: "帮我把看板的会话卡做成和 notch 一致"),
+                    CompanionMessagePreview(role: .assistant, text: "好的，我会对齐**状态着色**、`#id`、time-ago 和 `$ thinking` 工作行。"),
+                    CompanionMessagePreview(role: .assistant, text: "已提交并推送，横屏 hero 现在显示主会话最近 3 条转写。")
+                ],
+                pendingAction: nil,
+                question: nil,
+                sessions: previews,
+                updatedAt: now
+            )
         default:
             return CompanionStatePayload(
                 version: 1,

@@ -23,6 +23,9 @@ enum HookFormat {
     case nested
     /// Cursor style: [{command: "..."}]
     case flat
+    /// Trae IDE / Trae CN style:
+    /// {version, hooks: {event: [{matcher, loop_limit, hooks: [{type, command, timeout}]}]}}
+    case traeIDE
     /// TraeCli style: YAML managed block in ~/.trae/traecli.yaml
     case traecli
     /// GitHub Copilot CLI style: [{type, bash, timeoutSec}] with top-level version
@@ -57,6 +60,7 @@ enum HookFormat {
         case .claude: return "claude"
         case .nested: return "nested"
         case .flat: return "flat"
+        case .traeIDE: return "traeIDE"
         case .traecli: return "traecli"
         case .copilot: return "copilot"
         case .kimi: return "kimi"
@@ -73,6 +77,7 @@ enum HookFormat {
         case "claude": self = .claude
         case "nested": self = .nested
         case "flat": self = .flat
+        case "traeide": self = .traeIDE
         case "traecli": self = .traecli
         case "copilot": self = .copilot
         case "kimi": self = .kimi
@@ -227,7 +232,7 @@ struct ConfigInstaller {
             events: [
                 ("SessionStart", 10000, false),
                 ("SessionEnd", 10000, false),
-                ("BeforeTool", 10000, false),
+                ("BeforeTool", 86400000, false),
                 ("AfterTool", 10000, false),
                 ("BeforeAgent", 10000, false),
                 ("AfterAgent", 10000, false),
@@ -255,15 +260,15 @@ struct ConfigInstaller {
         CLIConfig(
             name: "Trae", source: "trae",
             configPath: ".trae/hooks.json", configKey: "hooks",
-            format: .flat,
-            events: defaultEvents(for: .flat)
+            format: .traeIDE,
+            events: defaultEvents(for: .traeIDE)
         ),
         // Trae CN
         CLIConfig(
             name: "Trae CN", source: "traecn",
             configPath: ".trae-cn/hooks.json", configKey: "hooks",
-            format: .flat,
-            events: defaultEvents(for: .flat)
+            format: .traeIDE,
+            events: defaultEvents(for: .traeIDE)
         ),
         // TraeCli
         CLIConfig(
@@ -461,7 +466,7 @@ struct ConfigInstaller {
                 ("PostToolUse", 5, false),
                 ("Stop", 5, false),
             ]
-        case .flat:
+        case .flat, .traeIDE:
             return [
                 ("beforeSubmitPrompt", 5, false),
                 ("beforeShellExecution", 5, false),
@@ -548,7 +553,7 @@ struct ConfigInstaller {
             // PreInvocation/PostInvocation are pass-through with no internal
             // meaning, so they're omitted. Timeout is in SECONDS (docs default 30).
             return [
-                ("PreToolUse", 5, false),
+                ("PreToolUse", 86400, false),
                 ("PostToolUse", 5, false),
                 ("Stop", 5, false),
             ]
@@ -1228,9 +1233,17 @@ struct ConfigInstaller {
                 // — otherwise long-running PermissionRequest hooks hang the agent (#103).
                 entry = ["matcher": "*", "hooks": [["type": "command", "command": baseCommand, "timeout": timeout] as [String: Any]]]
             case .nested:
-                entry = ["hooks": [["type": "command", "command": baseCommand, "timeout": timeout] as [String: Any]]]
+                let cmd = cli.source == "gemini" ? "\(baseCommand) --event \(event)" : baseCommand
+                entry = ["hooks": [["type": "command", "command": cmd, "timeout": timeout] as [String: Any]]]
             case .flat:
                 entry = ["command": "\(baseCommand) --event \(event)"]
+            case .traeIDE:
+                let traeCommand = "\(baseCommand) --event \(event)"
+                entry = [
+                    "matcher": "*",
+                    "loop_limit": 5,
+                    "hooks": [["type": "command", "command": traeCommand, "timeout": timeout] as [String: Any]],
+                ]
             case .traecli:
                 // Treat like flat for custom JSON hook configs; built-in TraeCli uses YAML install path.
                 entry = ["command": "\(baseCommand) --event \(event)"]
@@ -1274,11 +1287,11 @@ struct ConfigInstaller {
         // Seed file if missing — ensure Copilot's required "version" key lands first so the key-order
         // for downstream readers stays stable across installs.
         var seeded = originalText
-        if cli.format == .copilot, (originalText == nil || originalText?.isEmpty == true) {
+        if (cli.format == .copilot || cli.format == .traeIDE), (originalText == nil || originalText?.isEmpty == true) {
             seeded = "{\n  \"version\": 1\n}\n"
-        } else if cli.format == .copilot, root["version"] == nil {
+        } else if (cli.format == .copilot || cli.format == .traeIDE), root["version"] == nil {
             // Only insert `version` when the user hasn't set one themselves — don't clobber a
-            // user-bumped schema version in case Copilot ships v2+ in the future.
+            // user-bumped schema version in case Copilot/Trae ships v2+ in the future.
             if let t = originalText, let withVer = JSONMinimalEditor.setTopLevelValue(in: t, key: "version", value: 1) {
                 seeded = withVer
             }

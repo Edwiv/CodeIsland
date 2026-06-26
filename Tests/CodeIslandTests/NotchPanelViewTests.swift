@@ -2,30 +2,57 @@ import XCTest
 @testable import CodeIsland
 
 final class NotchPanelViewTests: XCTestCase {
-    func testEffectiveNotchWidthAppliesCollapsedWidthScale() {
+    func testEffectiveNotchWidthAppliesCollapsedWidthScaleOnNonNotchScreens() {
         XCTAssertEqual(
-            NotchWidthMetrics.effectiveNotchWidth(notchW: 200, collapsedWidthScale: 50),
+            NotchWidthMetrics.effectiveNotchWidth(notchW: 200, collapsedWidthScale: 50, hasNotch: false),
             100,
             accuracy: 0.001
         )
         XCTAssertEqual(
-            NotchWidthMetrics.effectiveNotchWidth(notchW: 200, collapsedWidthScale: 150),
+            NotchWidthMetrics.effectiveNotchWidth(notchW: 200, collapsedWidthScale: 150, hasNotch: false),
             300,
+            accuracy: 0.001
+        )
+    }
+
+    func testEffectiveNotchWidthIgnoresCollapsedWidthScaleOnNotchScreens() {
+        XCTAssertEqual(
+            NotchWidthMetrics.effectiveNotchWidth(notchW: 200, collapsedWidthScale: 50, hasNotch: true),
+            200,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            NotchWidthMetrics.effectiveNotchWidth(notchW: 200, collapsedWidthScale: 150, hasNotch: true),
+            200,
             accuracy: 0.001
         )
     }
 
     func testEffectiveNotchWidthClampsOutOfRangeScale() {
         XCTAssertEqual(
-            NotchWidthMetrics.effectiveNotchWidth(notchW: 200, collapsedWidthScale: 10),
+            NotchWidthMetrics.effectiveNotchWidth(notchW: 200, collapsedWidthScale: 10, hasNotch: false),
             100,
             accuracy: 0.001
         )
         XCTAssertEqual(
-            NotchWidthMetrics.effectiveNotchWidth(notchW: 200, collapsedWidthScale: 250),
+            NotchWidthMetrics.effectiveNotchWidth(notchW: 200, collapsedWidthScale: 250, hasNotch: false),
             300,
             accuracy: 0.001
         )
+    }
+
+    func testCompactToolNameKeepsShortNamesUnchanged() {
+        XCTAssertEqual(ToolNameDisplay.compact("Bash"), "Bash")
+        XCTAssertEqual(ToolNameDisplay.compact("  Read  "), "Read")
+    }
+
+    func testCompactToolNameTruncatesLongNamesWithoutLosingSuffix() {
+        let compact = ToolNameDisplay.compact("mcp__very_long_server_name__fetch_document_page", maxCharacters: 24)
+
+        XCTAssertLessThanOrEqual(compact.count, 24)
+        XCTAssertTrue(compact.hasPrefix("mcp"))
+        XCTAssertTrue(compact.hasSuffix("document_page"))
+        XCTAssertTrue(compact.contains("..."))
     }
 
     func testShouldTriggerJumpFailureFeedbackWhenAllAttemptsFail() {

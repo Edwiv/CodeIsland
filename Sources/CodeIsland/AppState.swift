@@ -753,10 +753,17 @@ final class AppState {
 
     /// Fast app-level suppress check (main-thread safe, no blocking).
     private func shouldSuppressAppLevel(for sessionId: String) -> Bool {
-        guard UserDefaults.standard.bool(forKey: SettingsKey.smartSuppress) else { return false }
+        !shouldAutoOpenPendingSurface(for: sessionId)
+    }
+
+    func shouldAutoOpenPendingSurface(
+        for sessionId: String,
+        isTerminalFrontmost: (SessionSnapshot) -> Bool = TerminalVisibilityDetector.isTerminalFrontmostForSession
+    ) -> Bool {
+        guard UserDefaults.standard.bool(forKey: SettingsKey.smartSuppress) else { return true }
         guard let session = sessions[sessionId],
-              (session.termApp != nil || session.termBundleId != nil) else { return false }
-        return TerminalVisibilityDetector.isTerminalFrontmostForSession(session)
+              (session.termApp != nil || session.termBundleId != nil) else { return true }
+        return !isTerminalFrontmost(session)
     }
 
     private func showCompletion(_ sessionId: String) {
@@ -1172,7 +1179,7 @@ final class AppState {
             activeSessionId = sessionId
             // If user is already browsing the session list, keep them there and
             // let inline controls handle approval without stealing focus.
-            if surface != .sessionList {
+            if surface != .sessionList, shouldAutoOpenPendingSurface(for: sessionId) {
                 surface = .approvalCard(sessionId: sessionId)
             }
             SoundManager.shared.handleEvent("PermissionRequest")
@@ -1447,8 +1454,10 @@ final class AppState {
 
         if questionQueue.count == 1 {
             activeSessionId = sessionId
-            withAnimation(NotchAnimation.open) {
-                surface = .questionCard(sessionId: sessionId)
+            if shouldAutoOpenPendingSurface(for: sessionId) {
+                withAnimation(NotchAnimation.open) {
+                    surface = .questionCard(sessionId: sessionId)
+                }
             }
             SoundManager.shared.handleEvent("PermissionRequest")
         }
@@ -1559,8 +1568,10 @@ final class AppState {
 
         if questionQueue.count == 1 {
             activeSessionId = sessionId
-            withAnimation(NotchAnimation.open) {
-                surface = .questionCard(sessionId: sessionId)
+            if shouldAutoOpenPendingSurface(for: sessionId) {
+                withAnimation(NotchAnimation.open) {
+                    surface = .questionCard(sessionId: sessionId)
+                }
             }
             SoundManager.shared.handleEvent("PermissionRequest")
         }
@@ -1796,14 +1807,16 @@ final class AppState {
             let sid = next.event.sessionId ?? "default"
             activeSessionId = sid
             // When the session list is open, keep it open; approvals can be handled inline.
-            if surface != .sessionList {
+            if surface != .sessionList, shouldAutoOpenPendingSurface(for: sid) {
                 surface = .approvalCard(sessionId: sid)
             }
             return true
         } else if let next = questionQueue.first {
             let sid = next.event.sessionId ?? "default"
             activeSessionId = sid
-            surface = .questionCard(sessionId: sid)
+            if shouldAutoOpenPendingSurface(for: sid) {
+                surface = .questionCard(sessionId: sid)
+            }
             return true
         } else if !completionQueue.isEmpty {
             while let next = completionQueue.first {
@@ -2625,6 +2638,8 @@ final class AppState {
                 child.tmuxClientTty = child.tmuxClientTty ?? parent.session.tmuxClientTty
                 child.tmuxEnv = child.tmuxEnv ?? parent.session.tmuxEnv
                 child.termBundleId = child.termBundleId ?? parent.session.termBundleId
+                child.remoteHostId = child.remoteHostId ?? parent.session.remoteHostId
+                child.remoteHostName = child.remoteHostName ?? parent.session.remoteHostName
                 child.cliPid = child.cliPid ?? parent.session.cliPid
                 child.cliStartTime = child.cliStartTime ?? parent.session.cliStartTime
                 child.status = subagent.status
@@ -4718,7 +4733,7 @@ final class AppState {
     }
 
     /// Read model and last 3 user/assistant messages from a transcript file's tail
-    private nonisolated static func readRecentFromTranscript(path: String) -> (String?, [ChatMessage]) {
+    nonisolated static func readRecentFromTranscript(path: String) -> (String?, [ChatMessage]) {
         guard let handle = FileHandle(forReadingAtPath: path) else { return (nil, []) }
         defer { handle.closeFile() }
 
@@ -4737,10 +4752,15 @@ final class AppState {
         for line in text.components(separatedBy: "\n") {
             guard !line.isEmpty,
                   let lineData = line.data(using: .utf8),
-                  let json = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
-                  let message = json["message"] as? [String: Any],
-                  let role = message["role"] as? String
+                  let json = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any]
             else { continue }
+
+            let type = json["type"] as? String
+            let message = (json["message"] as? [String: Any]) ?? json
+            let role = (message["role"] as? String) ?? type
+
+            guard let role else { continue }
+            let normalizedRole = role.lowercased()
 
             if model == nil, let m = message["model"] as? String, !m.isEmpty {
                 model = m
@@ -4748,22 +4768,43 @@ final class AppState {
 
             // Extract text content
             var textContent: String?
-            if let content = message["content"] as? String, !content.isEmpty {
-                textContent = content
-            } else if let contentArray = message["content"] as? [[String: Any]] {
-                for item in contentArray {
-                    if item["type"] as? String == "text",
-                       let t = item["text"] as? String, !t.isEmpty {
-                        textContent = t
-                        break
+            if normalizedRole == "user" || normalizedRole == "user_input" {
+                if let content = message["content"] as? String {
+                    var text = content
+                    if let startRange = text.range(of: "<USER_REQUEST>"),
+                       let endRange = text.range(of: "</USER_REQUEST>", range: startRange.upperBound..<text.endIndex) {
+                        text = String(text[startRange.upperBound..<endRange.lowerBound])
                     }
+                    textContent = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                } else if let contentArray = message["content"] as? [[String: Any]] {
+                    for item in contentArray {
+                        if item["type"] as? String == "text",
+                           let t = item["text"] as? String, !t.isEmpty {
+                            textContent = t
+                            break
+                        }
+                    }
+                }
+            } else if normalizedRole == "assistant" || normalizedRole == "planner_response" {
+                if let content = message["content"] as? String {
+                    textContent = content.trimmingCharacters(in: .whitespacesAndNewlines)
+                } else if let contentArray = message["content"] as? [[String: Any]] {
+                    for item in contentArray {
+                        if item["type"] as? String == "text",
+                           let t = item["text"] as? String, !t.isEmpty {
+                            textContent = t
+                            break
+                        }
+                    }
+                } else if let thinking = message["thinking"] as? String {
+                    textContent = thinking.trimmingCharacters(in: .whitespacesAndNewlines)
                 }
             }
 
-            if let text = textContent {
-                if role == "user" {
+            if let text = textContent, !text.isEmpty {
+                if normalizedRole == "user" || normalizedRole == "user_input" {
                     userMessages.append((index, text))
-                } else if role == "assistant" {
+                } else if normalizedRole == "assistant" || normalizedRole == "planner_response" {
                     assistantMessages.append((index, text))
                 }
             }

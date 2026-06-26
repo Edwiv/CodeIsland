@@ -41,11 +41,16 @@ final class IslandReservationItem {
     private func reservedWidth() -> CGFloat {
         let screen = ScreenDetector.preferredScreen
         let notchW = ScreenDetector.notchWidth(for: screen)
+        let hasNotch = ScreenDetector.screenHasNotch(screen)
         let notchHeight = ScreenDetector.topBarHeight(for: screen)
         let scale = UserDefaults.standard.object(forKey: SettingsKey.collapsedWidthScale) != nil
             ? UserDefaults.standard.integer(forKey: SettingsKey.collapsedWidthScale)
             : SettingsDefaults.collapsedWidthScale
-        let effectiveNotchW = NotchWidthMetrics.effectiveNotchWidth(notchW: notchW, collapsedWidthScale: scale)
+        let effectiveNotchW = NotchWidthMetrics.effectiveNotchWidth(
+            notchW: notchW,
+            collapsedWidthScale: scale,
+            hasNotch: hasNotch
+        )
         let mascotSize = min(27, notchHeight - 6)
         let wing = mascotSize + 14
         let toolExtra = screen.frame.width * 0.03   // matches NotchPanelView tool-status reserve

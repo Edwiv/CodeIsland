@@ -26,6 +26,17 @@ enum CompanionStatus: String, Codable, Hashable {
         case .waitingQuestion: return "问题"
         }
     }
+
+    /// 与 Mac notch 一致的展示优先级：审批 > 提问 > 运行 > 处理 > 空闲。
+    var priority: Int {
+        switch self {
+        case .waitingApproval: return 5
+        case .waitingQuestion: return 4
+        case .running: return 3
+        case .processing: return 2
+        case .idle: return 0
+        }
+    }
 }
 
 enum CompanionPendingAction: String, Codable {
@@ -45,10 +56,15 @@ enum CompanionMessageRole: String, Codable {
     }
 }
 
-struct CompanionMessagePreview: Codable, Identifiable {
+struct CompanionMessagePreview: Codable, Identifiable, Hashable {
     let id = UUID()
     let role: CompanionMessageRole
     let text: String
+
+    init(role: CompanionMessageRole, text: String) {
+        self.role = role
+        self.text = text
+    }
 
     private enum CodingKeys: String, CodingKey {
         case role
@@ -73,10 +89,48 @@ struct CompanionSessionPreview: Codable, Identifiable, Hashable {
     let toolName: String?
     let workspaceName: String?
     let message: String?
+    /// 该会话最近若干条消息（含角色），用于逐会话显示多轮转写。
+    let messages: [CompanionMessagePreview]
     let updatedAt: Date
 
     var id: String {
         sessionId ?? "\(source)-\(workspaceName ?? "session")-\(updatedAt.timeIntervalSince1970)"
+    }
+
+    init(
+        sessionId: String?,
+        source: String,
+        status: CompanionStatus,
+        toolName: String?,
+        workspaceName: String?,
+        message: String?,
+        messages: [CompanionMessagePreview] = [],
+        updatedAt: Date
+    ) {
+        self.sessionId = sessionId
+        self.source = source
+        self.status = status
+        self.toolName = toolName
+        self.workspaceName = workspaceName
+        self.message = message
+        self.messages = messages
+        self.updatedAt = updatedAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case sessionId, source, status, toolName, workspaceName, message, messages, updatedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        sessionId = try c.decodeIfPresent(String.self, forKey: .sessionId)
+        source = try c.decode(String.self, forKey: .source)
+        status = try c.decode(CompanionStatus.self, forKey: .status)
+        toolName = try c.decodeIfPresent(String.self, forKey: .toolName)
+        workspaceName = try c.decodeIfPresent(String.self, forKey: .workspaceName)
+        message = try c.decodeIfPresent(String.self, forKey: .message)
+        messages = try c.decodeIfPresent([CompanionMessagePreview].self, forKey: .messages) ?? []
+        updatedAt = try c.decode(Date.self, forKey: .updatedAt)
     }
 }
 
