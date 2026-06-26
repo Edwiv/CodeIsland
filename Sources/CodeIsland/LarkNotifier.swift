@@ -166,6 +166,7 @@ final class LarkNotifier: ObservableObject {
             "resolved_desktop": l["lark_card_resolved_desktop"],
             "resolved_phone": l["lark_card_resolved_phone"],
             "test_body": l["lark_card_test_body"],
+            "urgent_failed": l["lark_urgent_failed"],
             "agent": l["lark_card_agent"],
             "project": l["lark_card_project"],
             "permission": l["lark_card_permission"],
@@ -205,6 +206,8 @@ final class LarkNotifier: ObservableObject {
             lastResult = ActionResult(ok: ok, text: text)
         case "send_error":
             lastResult = ActionResult(ok: false, text: msg["message"] as? String ?? "send failed")
+        case "urgent_error":
+            lastResult = ActionResult(ok: false, text: msg["message"] as? String ?? L10n.shared["lark_urgent_failed"])
         case "pushed":
             if let reqKey = msg["reqId"] as? String, let sid = sessionId(forReqKey: reqKey) {
                 tracked[sid]?.pushed = true

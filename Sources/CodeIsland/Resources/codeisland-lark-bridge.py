@@ -3,7 +3,7 @@
 CodeIsland ⇄ Lark (Feishu) bridge sidecar.
 
 Owns ALL Feishu protocol work so the Swift app never needs a Feishu SDK:
-  • sends interactive approval/question cards to the user's phone,
+  • sends app-urgent interactive approval/question cards to the user's phone,
   • receives button taps via a WebSocket long connection (card.action.trigger),
   • updates ("recalls") a card when the request is resolved on the desktop.
 
@@ -73,6 +73,24 @@ except Exception:  # ImportError or partial install
           "message": "lark-oapi not installed. Run: pip3 install lark-oapi"})
     sys.exit(0)
 
+try:
+    from lark_oapi.api.im.v1 import (
+        GetChatMembersRequest,
+        UrgentAppMessageRequest, UrgentReceivers,
+    )
+    from lark_oapi.api.contact.v3 import (
+        BatchGetIdUserRequest, BatchGetIdUserRequestBody,
+    )
+    URGENT_IMPORT_ERROR = None
+except Exception as e:
+    # Keep normal card delivery working even on older lark-oapi builds.
+    GetChatMembersRequest = None
+    UrgentAppMessageRequest = None
+    UrgentReceivers = None
+    BatchGetIdUserRequest = None
+    BatchGetIdUserRequestBody = None
+    URGENT_IMPORT_ERROR = str(e)
+
 # The response type used to update a card inline from a card-action callback (so Feishu doesn't
 # roll back the optimistic UI). Optional — fall back to REST patch if unavailable.
 try:
@@ -87,6 +105,7 @@ target = {"type": "dm", "value": ""}
 i18n = {}
 req_to_msg = {}                # reqId -> {"message_id":.., "title":..}
 msg_to_req = {}                # message_id -> reqId (reverse, for form submits where value is empty)
+urgent_receiver_cache = {}     # target-derived recipient lists for urgent_app
 
 
 def t(key, default):
@@ -292,6 +311,130 @@ def patch_card(message_id, card):
         return err
 
 
+def resolve_email_to_open_id(email):
+    key = "email:%s" % email.lower()
+    cached = urgent_receiver_cache.get(key)
+    if cached:
+        return cached, None
+    if BatchGetIdUserRequest is None or BatchGetIdUserRequestBody is None:
+        return None, "lark-oapi does not expose contact batch_get_id (%s)" % (URGENT_IMPORT_ERROR or "unknown")
+    body = (BatchGetIdUserRequestBody.builder()
+            .emails([email])
+            .include_resigned(False)
+            .build())
+    req = (BatchGetIdUserRequest.builder()
+           .user_id_type("open_id")
+           .request_body(body)
+           .build())
+    try:
+        resp = client.contact.v3.user.batch_get_id(req)
+    except Exception as e:
+        return None, str(e)
+    if not resp.success():
+        return None, "code %s: %s" % (resp.code, resp.msg)
+    users = getattr(getattr(resp, "data", None), "user_list", None) or []
+    for user in users:
+        if (getattr(user, "email", "") or "").lower() == email.lower():
+            open_id = getattr(user, "user_id", None)
+            if open_id:
+                urgent_receiver_cache[key] = open_id
+                return open_id, None
+    if users:
+        open_id = getattr(users[0], "user_id", None)
+        if open_id:
+            urgent_receiver_cache[key] = open_id
+            return open_id, None
+    return None, "no Lark user found for email %s" % email
+
+
+def resolve_chat_member_open_ids(chat_id):
+    key = "chat:%s" % chat_id
+    cached = urgent_receiver_cache.get(key)
+    if cached:
+        return cached, None
+    if GetChatMembersRequest is None:
+        return None, "lark-oapi does not expose chat member lookup (%s)" % (URGENT_IMPORT_ERROR or "unknown")
+    ids = []
+    page_token = ""
+    try:
+        while True:
+            builder = (GetChatMembersRequest.builder()
+                       .chat_id(chat_id)
+                       .member_id_type("open_id")
+                       .page_size(100))
+            if page_token:
+                builder = builder.page_token(page_token)
+            resp = client.im.v1.chat_members.get(builder.build())
+            if not resp.success():
+                return None, "code %s: %s" % (resp.code, resp.msg)
+            data = getattr(resp, "data", None)
+            for member in getattr(data, "items", None) or []:
+                member_id = getattr(member, "member_id", None)
+                if member_id:
+                    ids.append(member_id)
+            if not getattr(data, "has_more", False):
+                break
+            page_token = getattr(data, "page_token", "") or ""
+            if not page_token:
+                break
+    except Exception as e:
+        return None, str(e)
+    unique_ids = list(dict.fromkeys(ids))
+    if not unique_ids:
+        return None, "no chat members found for urgent push"
+    urgent_receiver_cache[key] = unique_ids
+    return unique_ids, None
+
+
+def urgent_receivers_for_target():
+    rid_type, rid = receive_id_type_for(target)
+    if rid_type == "email":
+        open_id, err = resolve_email_to_open_id(rid)
+        return "open_id", ([open_id] if open_id else []), err
+    if rid_type in ("user_id", "open_id", "union_id"):
+        return rid_type, [rid], None
+    if rid_type == "chat_id":
+        open_ids, err = resolve_chat_member_open_ids(rid)
+        return "open_id", (open_ids or []), err
+    return None, [], "unsupported urgent target type %s" % rid_type
+
+
+def send_urgent(message_id):
+    """Best-effort Feishu app-urgent push for an already-sent message."""
+    if UrgentAppMessageRequest is None or UrgentReceivers is None:
+        return "lark-oapi does not expose urgent_app (%s)" % (URGENT_IMPORT_ERROR or "unknown")
+    user_id_type, user_ids, err = urgent_receivers_for_target()
+    if err:
+        return err
+    if not user_id_type or not user_ids:
+        return "no urgent receivers"
+    errors = []
+    for start in range(0, len(user_ids), 100):
+        chunk = user_ids[start:start + 100]
+        body = UrgentReceivers.builder().user_id_list(chunk).build()
+        req = (UrgentAppMessageRequest.builder()
+               .message_id(message_id)
+               .user_id_type(user_id_type)
+               .request_body(body)
+               .build())
+        try:
+            resp = client.im.v1.message.urgent_app(req)
+        except Exception as e:
+            errors.append(str(e))
+            continue
+        if not resp.success():
+            errors.append("code %s: %s" % (resp.code, resp.msg))
+            continue
+        invalid = getattr(getattr(resp, "data", None), "invalid_user_id_list", None) or []
+        if invalid:
+            flog("urgent: %d invalid receiver(s) for message=%s" % (len(invalid), message_id))
+            if len(invalid) >= len(chunk):
+                errors.append("all urgent receivers were invalid")
+    if errors:
+        return "; ".join(errors)
+    return None
+
+
 # ── WebSocket card-action handler ────────────────────────────────────────────
 
 def on_card_action(data):
@@ -380,11 +523,12 @@ def start_ws(app_id, app_secret):
 # ── Command handling ─────────────────────────────────────────────────────────
 
 def handle_config(msg):
-    global client, target, i18n
+    global client, target, i18n, urgent_receiver_cache
     app_id = msg.get("appId", "")
     app_secret = msg.get("appSecret", "")
     target = msg.get("target", target)
     i18n = msg.get("i18n", {}) or {}
+    urgent_receiver_cache = {}
     if not app_id or not app_secret:
         emit({"type": "error", "code": "auth", "message": "missing appId/appSecret"})
         return False
@@ -408,10 +552,15 @@ def handle_push(msg):
     title = card["header"]["title"]["content"]
     message_id, err = send_card(card)
     if message_id:
+        urgent_err = send_urgent(message_id)
         with STATE_LOCK:
             req_to_msg[msg["reqId"]] = {"message_id": message_id, "title": title}
             msg_to_req[message_id] = msg["reqId"]
-        emit({"type": "pushed", "reqId": msg["reqId"], "messageId": message_id})
+        emit({"type": "pushed", "reqId": msg["reqId"], "messageId": message_id, "urgent": urgent_err is None})
+        if urgent_err:
+            flog("urgent failed reqId=%s err=%s" % (msg.get("reqId"), urgent_err))
+            emit({"type": "urgent_error", "reqId": msg.get("reqId"),
+                  "message": "%s: %s" % (t("urgent_failed", "Urgent push failed"), urgent_err)})
     else:
         emit({"type": "send_error", "reqId": msg.get("reqId"), "message": err or "send failed"})
 
@@ -457,7 +606,11 @@ def handle_test(_msg):
     if client is None:
         emit({"type": "test_result", "ok": False, "message": "not connected"})
         return
-    _mid, err = send_card(build_test_card())
+    mid, err = send_card(build_test_card())
+    if err is None:
+        err = send_urgent(mid)
+        if err:
+            err = "%s: %s" % (t("urgent_failed", "Urgent push failed"), err)
     emit({"type": "test_result", "ok": err is None, "message": err or ""})
 
 
