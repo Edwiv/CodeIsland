@@ -474,6 +474,7 @@ private struct BehaviorPage: View {
     @AppStorage(SettingsKey.maxToolHistory) private var maxToolHistory = SettingsDefaults.maxToolHistory
     @AppStorage(SettingsKey.autoApproveTools) private var autoApproveRaw: String = SettingsDefaults.autoApproveTools
     @AppStorage(SettingsKey.excludedHookCwdSubstrings) private var excludedHookCwdSubstrings: String = SettingsDefaults.excludedHookCwdSubstrings
+    @AppStorage(SettingsKey.sessionSuppressPatterns) private var sessionSuppressPatterns: String = SettingsDefaults.sessionSuppressPatterns
     @AppStorage(SettingsKey.webhookEnabled) private var webhookEnabled: Bool = SettingsDefaults.webhookEnabled
     @AppStorage(SettingsKey.webhookURL) private var webhookURL: String = SettingsDefaults.webhookURL
     @AppStorage(SettingsKey.webhookEventFilter) private var webhookEventFilter: String = SettingsDefaults.webhookEventFilter
@@ -671,6 +672,15 @@ private struct BehaviorPage: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 TextField(l10n["excluded_hook_cwd_placeholder"], text: $excludedHookCwdSubstrings)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12, design: .monospaced))
+            }
+
+            Section(l10n["session_suppress_title"]) {
+                Text(l10n["session_suppress_desc"])
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                TextField(l10n["session_suppress_placeholder"], text: $sessionSuppressPatterns)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 12, design: .monospaced))
             }

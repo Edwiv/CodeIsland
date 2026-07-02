@@ -155,6 +155,9 @@ final class L10n: ObservableObject {
         "excluded_hook_cwd_title": "Ignore Hooks From Paths",
         "excluded_hook_cwd_desc": "Comma-separated substrings. Any hook event whose working directory contains one of them is silently dropped — useful for filtering out background plugins like claude-mem. Example: .claude-mem,.cache/agents",
         "excluded_hook_cwd_placeholder": "e.g. .claude-mem,.cache/agents",
+        "session_suppress_title": "Ignore Sessions Matching Text",
+        "session_suppress_desc": "Comma- or newline-separated substrings. If any hook payload text contains one, CodeIsland removes that session and ignores future events for it. Useful for batch automation prompts.",
+        "session_suppress_placeholder": "e.g. Supervisor execution contract,orange_o48[1m]",
 
         // Webhook forwarding
         "webhook_title": "Webhook Forwarding",
@@ -559,6 +562,9 @@ final class L10n: ObservableObject {
         "excluded_hook_cwd_title": "Hooks aus Pfaden ignorieren",
         "excluded_hook_cwd_desc": "Kommagetrennte Teilstrings. Hook-Ereignisse, deren Arbeitsverzeichnis einen davon enthält, werden still verworfen - nützlich zum Filtern von Hintergrund-Plugins wie claude-mem. Beispiel: .claude-mem,.cache/agents",
         "excluded_hook_cwd_placeholder": "z. B. .claude-mem,.cache/agents",
+        "session_suppress_title": "Sitzungen nach Text ignorieren",
+        "session_suppress_desc": "Komma- oder zeilengetrennte Teilstrings. Enthält ein Hook-Payload einen davon, entfernt CodeIsland diese Sitzung und ignoriert weitere Ereignisse dafür. Nützlich für Batch-Automatisierung.",
+        "session_suppress_placeholder": "z. B. Supervisor execution contract,orange_o48[1m]",
 
         // Webhook forwarding
         "webhook_title": "Webhook-Weiterleitung",
@@ -895,6 +901,9 @@ final class L10n: ObservableObject {
         "excluded_hook_cwd_title": "忽略指定路径的 Hook",
         "excluded_hook_cwd_desc": "用逗号分隔的子串。任何 hook 事件的工作目录如果包含其中之一就会被静默丢弃 —— 适合过滤 claude-mem 等后台插件。示例：.claude-mem,.cache/agents",
         "excluded_hook_cwd_placeholder": "例如 .claude-mem,.cache/agents",
+        "session_suppress_title": "按文本忽略 Session",
+        "session_suppress_desc": "用逗号或换行分隔的子串。任何 hook payload 文本如果包含其中之一，CodeIsland 会移除该 session，并忽略它后续的事件。适合过滤批量自动化任务。",
+        "session_suppress_placeholder": "例如 Supervisor execution contract,orange_o48[1m]",
 
         // Webhook 转发
         "webhook_title": "Webhook 转发",
@@ -1299,6 +1308,9 @@ final class L10n: ObservableObject {
         "excluded_hook_cwd_title": "指定パスの Hook を無視",
         "excluded_hook_cwd_desc": "カンマ区切りの部分文字列。作業ディレクトリにいずれかを含む hook イベントは静かに破棄されます。claude-mem 等のバックグラウンドプラグイン除外に便利です。例：.claude-mem,.cache/agents",
         "excluded_hook_cwd_placeholder": "例: .claude-mem,.cache/agents",
+        "session_suppress_title": "テキスト一致のセッションを無視",
+        "session_suppress_desc": "カンマまたは改行区切りの部分文字列。Hook ペイロードのテキストに一致すると、CodeIsland はそのセッションを削除し、以後のイベントを無視します。バッチ自動化の除外に便利です。",
+        "session_suppress_placeholder": "例: Supervisor execution contract,orange_o48[1m]",
 
         // Webhook 転送
         "webhook_title": "Webhook 転送",
@@ -1628,6 +1640,9 @@ final class L10n: ObservableObject {
         "excluded_hook_cwd_title": "지정 경로의 Hook 무시",
         "excluded_hook_cwd_desc": "쉼표로 구분된 부분 문자열. 작업 디렉터리에 하나라도 포함된 hook 이벤트는 조용히 폐기됩니다. claude-mem 같은 백그라운드 플러그인 필터링에 유용합니다. 예: .claude-mem,.cache/agents",
         "excluded_hook_cwd_placeholder": "예: .claude-mem,.cache/agents",
+        "session_suppress_title": "텍스트가 일치하는 세션 무시",
+        "session_suppress_desc": "쉼표 또는 줄바꿈으로 구분된 부분 문자열입니다. Hook payload 텍스트가 하나라도 포함하면 CodeIsland가 해당 세션을 제거하고 이후 이벤트를 무시합니다. 배치 자동화 필터링에 유용합니다.",
+        "session_suppress_placeholder": "예: Supervisor execution contract,orange_o48[1m]",
 
         // Webhook 전달
         "webhook_title": "Webhook 전달",
@@ -1957,6 +1972,9 @@ final class L10n: ObservableObject {
         "excluded_hook_cwd_title": "Belirli Yolların Hook'larını Yoksay",
         "excluded_hook_cwd_desc": "Virgülle ayrılmış alt dizeler. Çalışma dizini bunlardan birini içeren hook olayları sessizce yok sayılır — claude-mem gibi arka plan eklentilerini filtrelemek için kullanışlı. Örn: .claude-mem,.cache/agents",
         "excluded_hook_cwd_placeholder": "örn. .claude-mem,.cache/agents",
+        "session_suppress_title": "Metinle Eşleşen Oturumları Yoksay",
+        "session_suppress_desc": "Virgül veya satır sonuyla ayrılmış alt dizeler. Hook payload metni bunlardan birini içerirse CodeIsland bu oturumu kaldırır ve sonraki olaylarını yok sayar. Toplu otomasyon işleri için kullanışlıdır.",
+        "session_suppress_placeholder": "örn. Supervisor execution contract,orange_o48[1m]",
 
         // Webhook iletme
         "webhook_title": "Webhook İletme",

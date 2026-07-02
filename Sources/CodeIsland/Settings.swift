@@ -128,6 +128,8 @@ enum SettingsKey {
 
     // Hook cwd exclusion (comma-separated substrings; cwd containing any drops the event)
     static let excludedHookCwdSubstrings = "excludedHookCwdSubstrings"
+    // Session suppression (comma/newline-separated substrings; matching event text drops the session)
+    static let sessionSuppressPatterns = "sessionSuppressPatterns"
 
     // Webhook forwarding: POST hook events to an external URL
     static let webhookEnabled = "webhookEnabled"
@@ -231,6 +233,7 @@ struct SettingsDefaults {
     static let autoApproveTools = ""
 
     static let excludedHookCwdSubstrings = ""
+    static let sessionSuppressPatterns = ""
 
     static let webhookEnabled = false
     static let webhookURL = ""
@@ -315,6 +318,7 @@ class SettingsManager {
             SettingsKey.defaultSource: SettingsDefaults.defaultSource,
             SettingsKey.autoApproveTools: SettingsDefaults.autoApproveTools,
             SettingsKey.excludedHookCwdSubstrings: SettingsDefaults.excludedHookCwdSubstrings,
+            SettingsKey.sessionSuppressPatterns: SettingsDefaults.sessionSuppressPatterns,
             SettingsKey.webhookEnabled: SettingsDefaults.webhookEnabled,
             SettingsKey.webhookURL: SettingsDefaults.webhookURL,
             SettingsKey.webhookEventFilter: SettingsDefaults.webhookEventFilter,
@@ -581,6 +585,13 @@ class SettingsManager {
     var excludedHookCwdSubstrings: String {
         get { defaults.string(forKey: SettingsKey.excludedHookCwdSubstrings) ?? SettingsDefaults.excludedHookCwdSubstrings }
         set { defaults.set(newValue, forKey: SettingsKey.excludedHookCwdSubstrings) }
+    }
+
+    /// Comma- or newline-separated substrings. Any session whose hook payload text
+    /// contains one of them is removed and future events for that session are ignored.
+    var sessionSuppressPatterns: String {
+        get { defaults.string(forKey: SettingsKey.sessionSuppressPatterns) ?? SettingsDefaults.sessionSuppressPatterns }
+        set { defaults.set(newValue, forKey: SettingsKey.sessionSuppressPatterns) }
     }
 }
 

@@ -7,7 +7,7 @@ import subprocess
 import sys
 import time
 
-VERSION = "0.4.3"
+VERSION = "0.4.4"
 # Per-user socket path (#193): CodeIsland injects CODEISLAND_SOCKET_PATH via the hook
 # command, but fall back to a uid-scoped path so multiple users on a shared host never
 # collide on a single /tmp/codeisland.sock.
@@ -16,6 +16,18 @@ REMOTE_HOST_ID = os.environ.get("CODEISLAND_REMOTE_HOST_ID", "")
 REMOTE_HOST_NAME = os.environ.get("CODEISLAND_REMOTE_HOST_NAME", "")
 SOURCE = os.environ.get("CODEISLAND_SOURCE", "")
 TIMEOUT_SECONDS = 300
+
+
+def _truthy_env_value(value):
+    return str(value or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _truthy_env(name):
+    return _truthy_env_value(os.environ.get(name, ""))
+
+
+def _should_skip_from_env():
+    return _truthy_env("CODEISLAND_SKIP") or _truthy_env("CODEISLAND_DISABLED")
 
 
 def _normalize_event(name):
@@ -662,6 +674,8 @@ def _discover_and_emit():
 def main():
     if "--version" in sys.argv:
         print(VERSION)
+        return 0
+    if _should_skip_from_env():
         return 0
     if "--discover" in sys.argv:
         return _discover_and_emit()

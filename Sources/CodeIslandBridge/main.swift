@@ -206,6 +206,13 @@ let socketPath = SocketPath.path
 let env = ProcessInfo.processInfo.environment
 let args = CommandLine.arguments
 
+func envFlag(_ name: String) -> Bool {
+    guard let value = env[name]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() else {
+        return false
+    }
+    return ["1", "true", "yes", "on"].contains(value)
+}
+
 // Parse --source flag (e.g. --source codex)
 var sourceTag: String? = nil
 if let idx = args.firstIndex(of: "--source"), idx + 1 < args.count {
@@ -218,8 +225,8 @@ if let idx = args.firstIndex(of: "--event"), idx + 1 < args.count {
     eventTag = args[idx + 1]
 }
 
-// Quick exit: skip if CODEISLAND_SKIP is set
-guard env["CODEISLAND_SKIP"] == nil else { exit(0) }
+// Quick exit: skip if the caller opted this process out of CodeIsland.
+guard !envFlag("CODEISLAND_SKIP"), !envFlag("CODEISLAND_DISABLED") else { exit(0) }
 
 // Quick exit: socket doesn't exist or isn't a socket
 var statBuf = stat()

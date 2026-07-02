@@ -21,6 +21,7 @@ import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent/extensibility/exten
 /** Unix socket path CodeIsland listens on (user-scoped). */
 const userId = getuid?.() ?? 0;
 const SOCKET_PATH = `/tmp/codeisland-${userId}.sock`;
+const CODEISLAND_SKIPPED = isTruthyEnv("CODEISLAND_SKIP") || isTruthyEnv("CODEISLAND_DISABLED");
 
 /**
  * Bridge binary path. Used for blocking permission requests because Node's
@@ -52,6 +53,12 @@ const DANGEROUS_PATTERNS: RegExp[] = [
   /\bsudo\b/i,
   /\b(chmod|chown)\b.*777/i,
 ];
+
+function isTruthyEnv(name: string): boolean {
+  return ["1", "true", "yes", "on"].includes(
+    (process.env[name] ?? "").trim().toLowerCase(),
+  );
+}
 
 function isDangerous(command: string): boolean {
   return DANGEROUS_PATTERNS.some((p) => p.test(command));
@@ -104,6 +111,10 @@ function detectTty(): string | null {
  */
 function sendToSocket(payload: object): Promise<boolean> {
   return new Promise((resolve) => {
+    if (CODEISLAND_SKIPPED) {
+      resolve(false);
+      return;
+    }
     try {
       const sock = connect({ path: SOCKET_PATH }, () => {
         sock.write(JSON.stringify(payload));
@@ -134,6 +145,10 @@ function sendAndWaitResponse(
   timeoutMs = 30_000,
 ): Promise<Record<string, unknown> | null> {
   return new Promise((resolve) => {
+    if (CODEISLAND_SKIPPED) {
+      resolve(null);
+      return;
+    }
     if (!existsSync(BRIDGE_PATH)) {
       resolve(null);
       return;

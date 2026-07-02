@@ -45,6 +45,8 @@ final class AppState {
     var activeSessionId: String?
     var permissionQueue: [PermissionRequest] = []
     var questionQueue: [QuestionRequest] = []
+    @ObservationIgnored
+    private var suppressedSessionIds: Set<String> = []
 
     @ObservationIgnored
     private(set) var recentHookEvents: [DiagnosticHookEvent] = []
@@ -932,6 +934,16 @@ final class AppState {
         }
 
         let sessionId = event.sessionId ?? "default"
+        if suppressedSessionIds.contains(sessionId) {
+            return
+        }
+        if SessionSuppressionRules.eventMatches(event, patternsRaw: SettingsManager.shared.sessionSuppressPatterns) {
+            suppressedSessionIds.insert(sessionId)
+            if sessions[sessionId] != nil {
+                removeSession(sessionId)
+            }
+            return
+        }
 
         if applyCodexAppDiscoveryIfNeeded(event) {
             return
@@ -2142,8 +2154,13 @@ final class AppState {
 
     private func restoreSessions() {
         let persisted = SessionPersistence.load()
+        let suppressPatterns = SettingsManager.shared.sessionSuppressPatterns
         let cutoff = Date().addingTimeInterval(-30 * 60) // 30 minutes
         for p in persisted where p.lastActivity > cutoff {
+            if SessionSuppressionRules.persistedSessionMatches(p, patternsRaw: suppressPatterns) {
+                suppressedSessionIds.insert(p.sessionId)
+                continue
+            }
             guard sessions[p.sessionId] == nil else { continue }
             guard let source = SessionSnapshot.normalizedSupportedSource(p.source) else { continue }
             var snapshot = SessionSnapshot(startTime: p.startTime)

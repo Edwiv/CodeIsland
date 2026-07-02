@@ -67,6 +67,24 @@ final class RemoteHookCodexScannerTests: XCTestCase {
         XCTAssertEqual(parsed["codebuddy"], ["codebuddy-live": 12])
     }
 
+    func testRemoteHookSkipEnvTruthyValues() throws {
+        let output = try runPythonModuleSnippet("""
+        values = ["1", "true", "TRUE", "yes", "on", "0", "", "false"]
+        print(json.dumps({value: module._truthy_env_value(value) for value in values}, ensure_ascii=False, sort_keys=True))
+        """)
+        let data = Data(output.utf8)
+        let parsed = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Bool])
+
+        XCTAssertEqual(parsed["1"], true)
+        XCTAssertEqual(parsed["true"], true)
+        XCTAssertEqual(parsed["TRUE"], true)
+        XCTAssertEqual(parsed["yes"], true)
+        XCTAssertEqual(parsed["on"], true)
+        XCTAssertEqual(parsed["0"], false)
+        XCTAssertEqual(parsed[""], false)
+        XCTAssertEqual(parsed["false"], false)
+    }
+
     func testRemoteHookDiscoverySkipsStaleClaudeAndSubagents() throws {
         let output = try runPythonModuleSnippet("""
         now = 1000.0
