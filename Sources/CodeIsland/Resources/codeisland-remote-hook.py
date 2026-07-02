@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
 import time
 
-VERSION = "0.4.2"
+VERSION = "0.4.3"
 # Per-user socket path (#193): CodeIsland injects CODEISLAND_SOCKET_PATH via the hook
 # command, but fall back to a uid-scoped path so multiple users on a shared host never
 # collide on a single /tmp/codeisland.sock.
@@ -407,6 +408,83 @@ def _scan_discovered_jsonl(source, path):
     return _scan_session_jsonl(path)
 
 
+_SESSION_ARG_RE = re.compile(r"(?:^|\s)--(?:resume|session-id)\s+([A-Za-z0-9_.:-]+)")
+
+
+def _live_session_ids_from_commands(commands):
+    result = {"claude": set(), "codebuddy": set()}
+    for command in commands:
+        if not isinstance(command, str):
+            continue
+        lower = command.lower()
+        if "claude" not in lower and "codebuddy" not in lower:
+            continue
+        source = "codebuddy" if "codebuddy" in lower else "claude"
+        for match in _SESSION_ARG_RE.finditer(command):
+            session_id = match.group(1)
+            if session_id and not session_id.startswith("--"):
+                result[source].add(session_id)
+    return result
+
+
+def _live_session_ages_from_ps_lines(lines):
+    result = {"claude": {}, "codebuddy": {}}
+    for line in lines:
+        if not isinstance(line, str):
+            continue
+        parts = line.strip().split(None, 1)
+        if len(parts) != 2:
+            continue
+        try:
+            age_seconds = int(parts[0])
+        except ValueError:
+            continue
+
+        command = parts[1]
+        lower = command.lower()
+        if "claude" not in lower and "codebuddy" not in lower:
+            continue
+        source = "codebuddy" if "codebuddy" in lower else "claude"
+        for match in _SESSION_ARG_RE.finditer(command):
+            session_id = match.group(1)
+            if session_id and not session_id.startswith("--"):
+                previous = result[source].get(session_id)
+                if previous is None or age_seconds < previous:
+                    result[source][session_id] = age_seconds
+    return result
+
+
+def _live_process_session_ages():
+    try:
+        user = os.environ.get("USER") or str(os.getuid())
+        result = subprocess.run(
+            ["ps", "-u", user, "-o", "etimes=,command="],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode != 0:
+            return {"claude": {}, "codebuddy": {}}
+        return _live_session_ages_from_ps_lines(result.stdout.splitlines())
+    except Exception:
+        return {"claude": {}, "codebuddy": {}}
+
+
+def _is_subagent_transcript(path):
+    return (os.sep + "subagents" + os.sep) in (path or "")
+
+
+def _should_replay_discovered(source, path, session_id, mtime, now, live_ages, active_window_seconds, max_live_process_age_seconds):
+    if _is_subagent_transcript(path):
+        return False
+    if source in ("claude", "codebuddy"):
+        age = live_ages.get(source, {}).get(session_id)
+        if age is not None and age <= max_live_process_age_seconds:
+            return True
+        return now - mtime <= active_window_seconds
+    return True
+
+
 def _read_stdin_json():
     try:
         return json.load(sys.stdin)
@@ -480,7 +558,12 @@ def _discover_and_emit():
     # connect and aren't replayed). Kept tight to limit a just-finished turn briefly reading as
     # active; the next real PostToolUse/Stop reconciles it.
     active_window_seconds = 90
+    # devbox-style remote hosts can accumulate orphaned claude-agent-sdk processes for days.
+    # Treat recent transcript writes as authoritative, and use process liveness only while the
+    # process itself is reasonably young so reconnect discovery cannot revive stale sessions.
+    max_live_process_age_seconds = 24 * 60 * 60
     now = time.time()
+    live_ages = _live_process_session_ages()
 
     found = []  # (mtime, source, path, session_id)
     for source, base in stores:
@@ -507,6 +590,17 @@ def _discover_and_emit():
                 except OSError:
                     continue
                 if now - mtime > max_age_seconds:
+                    continue
+                if not _should_replay_discovered(
+                    source,
+                    fpath,
+                    fname[:-len(".jsonl")],
+                    mtime,
+                    now,
+                    live_ages,
+                    active_window_seconds,
+                    max_live_process_age_seconds,
+                ):
                     continue
                 found.append((mtime, source, fpath, fname[:-len(".jsonl")]))
 
