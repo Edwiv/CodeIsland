@@ -28,6 +28,20 @@ cd "$REPO_ROOT"
 
 ./build.sh
 
+version_key='Print :CFBundleShortVersionString'
+candidate_version=$(/usr/libexec/PlistBuddy -c "$version_key" "$APP_BUNDLE/Contents/Info.plist")
+if [ -d "$INSTALL_APP" ] && [ "${CODEISLAND_ALLOW_VERSION_DOWNGRADE:-}" != "1" ]; then
+    installed_version=$(/usr/libexec/PlistBuddy -c "$version_key" "$INSTALL_APP/Contents/Info.plist" 2>/dev/null || true)
+    if [ -n "$installed_version" ]; then
+        newest_version=$(printf '%s\n%s\n' "$candidate_version" "$installed_version" | sort -V | tail -n 1)
+        if [ "$newest_version" = "$installed_version" ] && [ "$candidate_version" != "$installed_version" ]; then
+            echo "ERROR: refusing to deploy older CodeIsland $candidate_version over installed $installed_version." >&2
+            echo "       Bump Info.plist or set CODEISLAND_ALLOW_VERSION_DOWNGRADE=1 intentionally." >&2
+            exit 1
+        fi
+    fi
+fi
+
 rm -rf "$STAGED_APP"
 ditto --norsrc --noextattr "$APP_BUNDLE" "$STAGED_APP"
 
