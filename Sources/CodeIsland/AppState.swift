@@ -170,7 +170,24 @@ final class AppState {
         }
     }
 
+    nonisolated static func shouldRemoveStaleRemoteSession(
+        _ session: SessionSnapshot,
+        now: Date,
+        timeoutMinutes: Int
+    ) -> Bool {
+        guard timeoutMinutes > 0,
+              session.isRemote,
+              session.status != .idle,
+              session.status != .waitingApproval,
+              session.status != .waitingQuestion else {
+            return false
+        }
+        return now.timeIntervalSince(session.lastActivity) >= TimeInterval(timeoutMinutes * 60)
+    }
+
     private func cleanupIdleSessions() {
+        let now = Date()
+
         // 1. Verify monitored PIDs are still alive (DispatchSource can silently miss exits)
         //    Also kill orphaned processes (ppid <= 1, terminal closed but process survived).
         var deadMonitors: [(String, ProcessIdentity)] = []
@@ -287,8 +304,19 @@ final class AppState {
             removeSession(key)
         }
 
-        // 4. Remove idle sessions past timeout (user setting, or 10 min default for no-monitor sessions)
+        // 3c. Remote sessions have no local process monitor, and old remote hooks can miss
+        //     the terminal Stop/SessionEnd event. If discovery/hook activity has not refreshed
+        //     the session within the user timeout, remove the stale non-waiting row instead of
+        //     letting it accumulate forever in the island list.
         let userTimeout = SettingsManager.shared.sessionTimeout
+        let staleRemoteIds = sessions.compactMap { key, session in
+            Self.shouldRemoveStaleRemoteSession(session, now: now, timeoutMinutes: userTimeout) ? key : nil
+        }
+        for key in staleRemoteIds {
+            removeSession(key)
+        }
+
+        // 4. Remove idle sessions past timeout (user setting, or 10 min default for no-monitor sessions)
         let defaultStaleMinutes = 10  // for sessions without process monitor
         for (key, session) in sessions where session.status == .idle {
             let idleMinutes = Int(-session.lastActivity.timeIntervalSinceNow / 60)
