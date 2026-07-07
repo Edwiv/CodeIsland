@@ -85,6 +85,49 @@ final class RemoteHookCodexScannerTests: XCTestCase {
         XCTAssertEqual(parsed["false"], false)
     }
 
+    func testRemoteHookBuildsDiscoverySnapshotPayload() throws {
+        let output = try runPythonModuleSnippet("""
+        found = [
+            (100.0, "claude", "/tmp/a.jsonl", "session-a"),
+            (99.0, "claude", "/tmp/a-dup.jsonl", "session-a"),
+            (98.0, "codex", "/tmp/b.jsonl", "session-b"),
+        ]
+        print(json.dumps(module._remote_session_snapshot_payload(found, 123.5), ensure_ascii=False, sort_keys=True))
+        """)
+        let data = Data(output.utf8)
+        let parsed = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let sessions = try XCTUnwrap(parsed["sessions"] as? [[String: String]])
+
+        XCTAssertEqual(parsed["hook_event_name"] as? String, "RemoteSessionSnapshot")
+        XCTAssertEqual(parsed["_snapshot_complete"] as? Bool, true)
+        XCTAssertEqual(parsed["_snapshot_found_count"] as? Int, 2)
+        XCTAssertEqual(parsed["_snapshot_observed_at"] as? Double, 123.5)
+        XCTAssertEqual(parsed["_remote_hook_version"] as? String, "0.4.6")
+        XCTAssertEqual(sessions, [
+            ["session_id": "session-a", "source": "claude"],
+            ["session_id": "session-b", "source": "codex"],
+        ])
+        XCTAssertEqual(parsed["_snapshot_sources"] as? [String], ["claude", "codebuddy", "codex"])
+    }
+
+    func testRemoteHookConsidersOldTranscriptWhenLiveProcessIsYoung() throws {
+        let output = try runPythonModuleSnippet("""
+        live = {"claude": {"live-session": 60}, "codebuddy": {}}
+        cases = {
+            "recent_file": module._should_consider_discovery_file("claude", "recent-session", 950.0, 1000.0, live, 300.0, 86400.0),
+            "old_live": module._should_consider_discovery_file("claude", "live-session", 100.0, 1000.0, live, 300.0, 86400.0),
+            "old_not_live": module._should_consider_discovery_file("claude", "stale-session", 100.0, 1000.0, live, 300.0, 86400.0),
+        }
+        print(json.dumps(cases, ensure_ascii=False, sort_keys=True))
+        """)
+        let data = Data(output.utf8)
+        let parsed = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Bool])
+
+        XCTAssertEqual(parsed["recent_file"], true)
+        XCTAssertEqual(parsed["old_live"], true)
+        XCTAssertEqual(parsed["old_not_live"], false)
+    }
+
     func testRemoteHookDiscoverySkipsStaleClaudeAndSubagents() throws {
         let output = try runPythonModuleSnippet("""
         now = 1000.0

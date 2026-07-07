@@ -185,6 +185,55 @@ final class AppState {
         return now.timeIntervalSince(session.lastActivity) >= TimeInterval(timeoutMinutes * 60)
     }
 
+    nonisolated static func remoteSessionIdsToRemoveAfterSnapshot(
+        sessions: [String: SessionSnapshot],
+        hostId: String,
+        snapshotSources: Set<String>,
+        confirmedProviderSessionIdsBySource: [String: Set<String>],
+        observedAt: Date?
+    ) -> [String] {
+        sessions.compactMap { trackedSessionId, session -> String? in
+            guard session.remoteHostId == hostId,
+                  snapshotSources.contains(session.source),
+                  session.status != .waitingApproval,
+                  session.status != .waitingQuestion else {
+                return nil
+            }
+            if let observedAt, session.lastActivity > observedAt {
+                return nil
+            }
+            guard let providerSessionId = remoteProviderSessionId(
+                trackedSessionId: trackedSessionId,
+                hostId: hostId,
+                session: session
+            ) else {
+                return nil
+            }
+            if confirmedProviderSessionIdsBySource[session.source]?.contains(providerSessionId) == true {
+                return nil
+            }
+            return trackedSessionId
+        }
+        .sorted()
+    }
+
+    private nonisolated static func remoteProviderSessionId(
+        trackedSessionId: String,
+        hostId: String,
+        session: SessionSnapshot
+    ) -> String? {
+        if let providerSessionId = session.providerSessionId?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !providerSessionId.isEmpty {
+            return providerSessionId
+        }
+        let remotePrefix = "remote:\(hostId):"
+        if trackedSessionId.hasPrefix(remotePrefix) {
+            let suffix = trackedSessionId.dropFirst(remotePrefix.count)
+            return suffix.isEmpty ? nil : String(suffix)
+        }
+        return trackedSessionId.isEmpty ? nil : trackedSessionId
+    }
+
     private func cleanupIdleSessions() {
         let now = Date()
 
@@ -961,6 +1010,10 @@ final class AppState {
             return
         }
 
+        if applyRemoteSessionSnapshotIfNeeded(event) {
+            return
+        }
+
         let sessionId = event.sessionId ?? "default"
         if suppressedSessionIds.contains(sessionId) {
             return
@@ -1133,6 +1186,76 @@ final class AppState {
         startRotationIfNeeded()
         refreshDerivedState()
         return true
+    }
+
+    private func applyRemoteSessionSnapshotIfNeeded(_ event: HookEvent) -> Bool {
+        guard event.eventName == "RemoteSessionSnapshot" else { return false }
+        guard (event.rawJSON["_snapshot_complete"] as? Bool) == true else { return true }
+        guard let hostId = Self.nonEmptySnapshotString(event.rawJSON["_remote_host_id"]) else { return true }
+
+        let snapshotSources = Set(Self.snapshotStrings(event.rawJSON["_snapshot_sources"]).compactMap {
+            SessionSnapshot.normalizedSupportedSource($0)
+        })
+        guard !snapshotSources.isEmpty else { return true }
+
+        var confirmedBySource: [String: Set<String>] = [:]
+        if let rawSessions = event.rawJSON["sessions"] as? [[String: Any]] {
+            for item in rawSessions {
+                guard let source = Self.nonEmptySnapshotString(item["source"])
+                    .flatMap(SessionSnapshot.normalizedSupportedSource),
+                      let sessionId = Self.nonEmptySnapshotString(item["session_id"]) else {
+                    continue
+                }
+                confirmedBySource[source, default: []].insert(sessionId)
+            }
+        }
+
+        let observedAt = Self.snapshotObservedAt(event.rawJSON["_snapshot_observed_at"])
+        let removeIds = Self.remoteSessionIdsToRemoveAfterSnapshot(
+            sessions: sessions,
+            hostId: hostId,
+            snapshotSources: snapshotSources,
+            confirmedProviderSessionIdsBySource: confirmedBySource,
+            observedAt: observedAt
+        )
+        for sessionId in removeIds {
+            removeSession(sessionId)
+        }
+        if !removeIds.isEmpty {
+            scheduleSave()
+            startRotationIfNeeded()
+            refreshDerivedState()
+        }
+        return true
+    }
+
+    private nonisolated static func snapshotStrings(_ value: Any?) -> [String] {
+        if let strings = value as? [String] {
+            return strings.compactMap(nonEmptySnapshotString)
+        }
+        if let values = value as? [Any] {
+            return values.compactMap(nonEmptySnapshotString)
+        }
+        return []
+    }
+
+    private nonisolated static func nonEmptySnapshotString(_ value: Any?) -> String? {
+        guard let string = value as? String else { return nil }
+        let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private nonisolated static func snapshotObservedAt(_ value: Any?) -> Date? {
+        if let number = value as? NSNumber {
+            return Date(timeIntervalSince1970: number.doubleValue)
+        }
+        if let double = value as? Double {
+            return Date(timeIntervalSince1970: double)
+        }
+        if let int = value as? Int {
+            return Date(timeIntervalSince1970: TimeInterval(int))
+        }
+        return nil
     }
 
     func removeRemoteSessions(hostId: String) {

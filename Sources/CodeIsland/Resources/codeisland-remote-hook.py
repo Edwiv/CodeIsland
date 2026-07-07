@@ -7,7 +7,7 @@ import subprocess
 import sys
 import time
 
-VERSION = "0.4.4"
+VERSION = "0.4.6"
 # Per-user socket path (#193): CodeIsland injects CODEISLAND_SOCKET_PATH via the hook
 # command, but fall back to a uid-scoped path so multiple users on a shared host never
 # collide on a single /tmp/codeisland.sock.
@@ -16,6 +16,7 @@ REMOTE_HOST_ID = os.environ.get("CODEISLAND_REMOTE_HOST_ID", "")
 REMOTE_HOST_NAME = os.environ.get("CODEISLAND_REMOTE_HOST_NAME", "")
 SOURCE = os.environ.get("CODEISLAND_SOURCE", "")
 TIMEOUT_SECONDS = 300
+SNAPSHOT_SOURCES = ("claude", "codebuddy", "codex")
 
 
 def _truthy_env_value(value):
@@ -497,6 +498,13 @@ def _should_replay_discovered(source, path, session_id, mtime, now, live_ages, a
     return True
 
 
+def _should_consider_discovery_file(source, session_id, mtime, now, live_ages, max_age_seconds, max_live_process_age_seconds):
+    if now - mtime <= max_age_seconds:
+        return True
+    live_age = live_ages.get(source, {}).get(session_id)
+    return live_age is not None and live_age <= max_live_process_age_seconds
+
+
 def _read_stdin_json():
     try:
         return json.load(sys.stdin)
@@ -523,6 +531,35 @@ def _send_event(payload, expects_response):
             sock.close()
         except Exception:
             pass
+
+
+def _remote_session_snapshot_payload(found, observed_at):
+    sessions = []
+    seen = set()
+    for _, source, _, session_id in found:
+        if not source or not session_id:
+            continue
+        key = (source, session_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        sessions.append({
+            "source": source,
+            "session_id": session_id,
+        })
+
+    max_snapshot_sessions = 500
+    return {
+        "hook_event_name": "RemoteSessionSnapshot",
+        "_remote_host_id": REMOTE_HOST_ID,
+        "_remote_host_name": REMOTE_HOST_NAME,
+        "_remote_hook_version": VERSION,
+        "_snapshot_complete": len(sessions) <= max_snapshot_sessions,
+        "_snapshot_observed_at": observed_at,
+        "_snapshot_sources": list(SNAPSHOT_SOURCES),
+        "_snapshot_found_count": len(sessions),
+        "sessions": sessions[:max_snapshot_sessions],
+    }
 
 
 def _get_tty():
@@ -601,12 +638,21 @@ def _discover_and_emit():
                     mtime = os.path.getmtime(fpath)
                 except OSError:
                     continue
-                if now - mtime > max_age_seconds:
+                session_id = fname[:-len(".jsonl")]
+                if not _should_consider_discovery_file(
+                    source,
+                    session_id,
+                    mtime,
+                    now,
+                    live_ages,
+                    max_age_seconds,
+                    max_live_process_age_seconds,
+                ):
                     continue
                 if not _should_replay_discovered(
                     source,
                     fpath,
-                    fname[:-len(".jsonl")],
+                    session_id,
                     mtime,
                     now,
                     live_ages,
@@ -614,7 +660,7 @@ def _discover_and_emit():
                     max_live_process_age_seconds,
                 ):
                     continue
-                found.append((mtime, source, fpath, fname[:-len(".jsonl")]))
+                found.append((mtime, source, fpath, session_id))
 
     codex_base = os.path.join(home, ".codex", "sessions")
     if os.path.isdir(codex_base):
@@ -668,6 +714,7 @@ def _discover_and_emit():
                 else:
                     payload[key] = value
         _send_event(payload, expects_response=False)
+    _send_event(_remote_session_snapshot_payload(found, now), expects_response=False)
     return 0
 
 
