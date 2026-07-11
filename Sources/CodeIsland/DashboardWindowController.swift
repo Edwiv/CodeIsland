@@ -35,8 +35,11 @@ final class DashboardWindowController {
         let screen = NSScreen.main ?? NSScreen.screens.first
         let screenW = screen?.frame.width ?? 1440
         let screenH = screen?.frame.height ?? 900
-        let winW = min(1100, screenW * 0.72)
-        let winH = min(720, screenH * 0.78)
+        // Portrait-first: this board is designed for a dedicated vertical monitor. Default to a
+        // tall, narrow window; on a portrait screen it fills most of the height, on a landscape
+        // screen it stays a slim column the user can fling onto their vertical display.
+        let winW = min(560, screenW * 0.9)
+        let winH = min(1040, screenH * 0.94)
 
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: winW, height: winH),
@@ -48,7 +51,7 @@ final class DashboardWindowController {
         window.title = L10n.shared["dashboard_title"]
         window.backgroundColor = .windowBackgroundColor
         window.contentView = hostingView
-        window.contentMinSize = NSSize(width: 820, height: 520)
+        window.contentMinSize = NSSize(width: 400, height: 620)
         window.center()
         window.isReleasedWhenClosed = false
         window.makeKeyAndOrderFront(nil)
