@@ -15,6 +15,8 @@ class HookServer {
 
     private let appState: AppState
     nonisolated static var socketPath: String { SocketPath.path }
+    nonisolated static let healthProbeRequest = Data(#"{"_codeisland_health_probe":true}"#.utf8)
+    nonisolated static let healthProbeResponse = Data(#"{"ok":true}"#.utf8)
     private var listener: NWListener?
 
     init(appState: AppState) {
@@ -360,6 +362,14 @@ class HookServer {
     }
 
     private func processRequest(data: Data, connection: NWConnection) {
+        // RemoteManager uses this tiny exchange to verify the complete SSH reverse-forward
+        // path. Handle it before JSON event parsing so probes never create sessions or
+        // diagnostics entries.
+        if data == Self.healthProbeRequest {
+            sendResponse(connection: connection, data: Self.healthProbeResponse)
+            return
+        }
+
         // Sub-session mode pre-filter (#123, #151): events that arrived through a
         // plugin proxy (`_via_plugin`) or from a Codex native subagent can be
         // merged into the matching main session, hidden, or kept separate per

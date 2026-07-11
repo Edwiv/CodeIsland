@@ -22,4 +22,19 @@ final class RemoteManagerTests: XCTestCase {
         XCTAssertEqual(RemoteManager.reconnectDelay(attempt: 0), 1)
         XCTAssertEqual(RemoteManager.reconnectDelay(attempt: -1), 1)
     }
+
+    func testForwardProbeScriptChecksTheReverseForwardAndResponse() {
+        let script = RemoteInstaller.forwardProbeScript(remoteSocketPath: "/tmp/codeisland-1000.sock")
+
+        XCTAssertTrue(script.contains("socket_path = \"/tmp/codeisland-1000.sock\""))
+        XCTAssertTrue(script.contains("sock.connect(socket_path)"))
+        XCTAssertTrue(script.contains(#"request = b'{"_codeisland_health_probe":true}'"#))
+        XCTAssertTrue(script.contains(#"expected = b'{"ok":true}'"#))
+        XCTAssertTrue(script.contains("sock.shutdown(socket.SHUT_WR)"))
+    }
+
+    func testHookServerHealthProbeProtocolMatchesRemoteProbe() {
+        XCTAssertEqual(HookServer.healthProbeRequest, Data(#"{"_codeisland_health_probe":true}"#.utf8))
+        XCTAssertEqual(HookServer.healthProbeResponse, Data(#"{"ok":true}"#.utf8))
+    }
 }

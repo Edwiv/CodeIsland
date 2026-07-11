@@ -56,6 +56,51 @@ enum RemoteInstaller {
         _ = await runSSH(host: host, command: command, timeout: 30)
     }
 
+    /// End-to-end tunnel health check. A separate SSH command runs on the remote host,
+    /// connects to the reverse-forwarded Unix socket, and verifies HookServer's response.
+    /// This detects the common post-wake state where `ssh -N` is still alive but `-R` no
+    /// longer carries traffic.
+    static func probeForward(host: RemoteHost, remoteSocketPath: String) async -> RemoteInstallResult {
+        let script = forwardProbeScript(remoteSocketPath: remoteSocketPath)
+        let encoded = Data(script.utf8).base64EncodedString()
+        let command = "echo '\(encoded)' | base64 -d | python3"
+        let result = await runSSH(host: host, command: command, timeout: 12)
+        guard result.ok else {
+            return RemoteInstallResult(ok: false, message: result.stderrSummary)
+        }
+        guard result.stdoutSummary == "ok" else {
+            return RemoteInstallResult(ok: false, message: "unexpected health probe response")
+        }
+        return RemoteInstallResult(ok: true, message: "ok")
+    }
+
+    static func forwardProbeScript(remoteSocketPath: String) -> String {
+        let socketPath = pythonStringLiteral(remoteSocketPath)
+        return """
+import socket
+import sys
+
+socket_path = \(socketPath)
+request = b'{"_codeisland_health_probe":true}'
+expected = b'{"ok":true}'
+sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+sock.settimeout(4.0)
+try:
+    sock.connect(socket_path)
+    sock.sendall(request)
+    sock.shutdown(socket.SHUT_WR)
+    response = sock.recv(4096)
+    if response != expected:
+        raise RuntimeError("unexpected response: " + repr(response))
+    print("ok")
+except Exception as error:
+    print(str(error), file=sys.stderr)
+    sys.exit(1)
+finally:
+    sock.close()
+"""
+    }
+
     /// POSIX single-quote shell escaping for an arbitrary value.
     private static func shQuote(_ value: String) -> String {
         "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
@@ -942,6 +987,7 @@ print(" · ".join(parts))
             process.standardOutput = stdout
             process.standardError = stderr
             process.standardInput = FileHandle.nullDevice
+            process.environment = SSHForwarder.environment(host: host)
 
             do {
                 try process.run()

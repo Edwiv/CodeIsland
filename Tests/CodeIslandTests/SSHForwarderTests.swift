@@ -107,4 +107,37 @@ final class SSHForwarderTests: XCTestCase {
         XCTAssertTrue(args.contains("BatchMode=yes"))
         XCTAssertTrue(args.contains("ConnectTimeout=5"))
     }
+
+    // MARK: - tunnelArguments
+
+    func testTunnelArgumentsUseDedicatedConnectionAndFastKeepalive() {
+        let host = RemoteHost(name: "test", host: "devbox")
+        let args = SSHForwarder.tunnelArguments(
+            host: host,
+            localSocketPath: "/tmp/codeisland-501.sock",
+            remoteSocketPath: "/tmp/codeisland-1000.sock"
+        )
+
+        XCTAssertTrue(args.contains("ExitOnForwardFailure=yes"))
+        XCTAssertTrue(args.contains("ConnectionAttempts=1"))
+        XCTAssertTrue(args.contains("TCPKeepAlive=yes"))
+        XCTAssertTrue(args.contains("ServerAliveInterval=10"))
+        XCTAssertTrue(args.contains("ServerAliveCountMax=2"))
+        XCTAssertTrue(args.contains("ControlMaster=no"))
+        XCTAssertTrue(args.contains("ControlPath=none"))
+        XCTAssertEqual(Array(args.suffix(3)), ["-R", "/tmp/codeisland-1000.sock:/tmp/codeisland-501.sock", "devbox"])
+    }
+
+    func testSSHEnvironmentUsesConfiguredAuthSocket() {
+        let host = RemoteHost(
+            name: "test",
+            host: "devbox",
+            authSocket: "  /tmp/agent.sock  "
+        )
+
+        let environment = SSHForwarder.environment(host: host, base: ["PATH": "/usr/bin"])
+
+        XCTAssertEqual(environment["PATH"], "/usr/bin")
+        XCTAssertEqual(environment["SSH_AUTH_SOCK"], "/tmp/agent.sock")
+    }
 }

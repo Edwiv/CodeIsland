@@ -21,6 +21,7 @@ final class SSHForwarder {
     private var process: Process?
     private var stderrPipe: Pipe?
     private var generation: UInt64 = 0
+    private var lastErrorMessage: String?
 
     func connect(host: RemoteHost, localSocketPath: String, remoteSocketPath: String) {
         disconnect()
@@ -33,6 +34,7 @@ final class SSHForwarder {
 
         generation &+= 1
         let currentGeneration = generation
+        lastErrorMessage = nil
         status = .connecting
 
         // Remove any stale remote socket left over from a previous tunnel before
@@ -44,7 +46,7 @@ final class SSHForwarder {
         // host is unreachable. The tunnel starts only after cleanup returns, so the
         // -R bind never races the leftover socket.
         let cleanupArguments = Self.cleanupArguments(host: host, remoteSocketPath: remoteSocketPath)
-        let cleanupEnvironment = buildEnvironment(host: host)
+        let cleanupEnvironment = Self.environment(host: host)
         DispatchQueue.global(qos: .userInitiated).async {
             Self.runCleanup(arguments: cleanupArguments, environment: cleanupEnvironment)
             DispatchQueue.main.async { [weak self] in
@@ -68,10 +70,10 @@ final class SSHForwarder {
     private func startTunnel(host: RemoteHost, localSocketPath: String, remoteSocketPath: String, generation currentGeneration: UInt64) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-        process.arguments = buildArguments(host: host, localSocketPath: localSocketPath, remoteSocketPath: remoteSocketPath)
+        process.arguments = Self.tunnelArguments(host: host, localSocketPath: localSocketPath, remoteSocketPath: remoteSocketPath)
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = FileHandle.nullDevice
-        process.environment = buildEnvironment(host: host)
+        process.environment = Self.environment(host: host)
 
         let stderr = Pipe()
         process.standardError = stderr
@@ -89,7 +91,7 @@ final class SSHForwarder {
                 self.process = nil
                 if case .disconnected = self.status { return }
                 let code = proc.terminationStatus
-                self.status = .failed("ssh exited (\(code))")
+                self.status = .failed(self.lastErrorMessage ?? "ssh exited (\(code))")
             }
         }
 
@@ -191,13 +193,15 @@ final class SSHForwarder {
         return args
     }
 
-    private func buildArguments(host: RemoteHost, localSocketPath: String, remoteSocketPath: String) -> [String] {
+    static func tunnelArguments(host: RemoteHost, localSocketPath: String, remoteSocketPath: String) -> [String] {
         var args: [String] = [
             "-N",
             "-T",
             "-o", "BatchMode=yes",
             "-o", "ExitOnForwardFailure=yes",
-            "-o", "ServerAliveInterval=15",
+            "-o", "ConnectionAttempts=1",
+            "-o", "TCPKeepAlive=yes",
+            "-o", "ServerAliveInterval=10",
             "-o", "ServerAliveCountMax=2",
             "-o", "StreamLocalBindUnlink=yes",
             "-o", "StreamLocalBindMask=0000",
@@ -227,8 +231,11 @@ final class SSHForwarder {
     /// agents fronted by a password manager (1Password, Bitwarden, etc.) can sign
     /// the handshake even when the GUI app didn't inherit the env var from a shell.
     /// See issue #81.
-    private func buildEnvironment(host: RemoteHost) -> [String: String] {
-        var env = ProcessInfo.processInfo.environment
+    nonisolated static func environment(
+        host: RemoteHost,
+        base: [String: String] = ProcessInfo.processInfo.environment
+    ) -> [String: String] {
+        var env = base
         let trimmed = host.authSocket.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty {
             let expanded = (trimmed as NSString).expandingTildeInPath
@@ -241,13 +248,20 @@ final class SSHForwarder {
         let handle = pipe.fileHandleForReading
         handle.readabilityHandler = { [weak self] fileHandle in
             let data = fileHandle.availableData
-            guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else { return }
+            guard !data.isEmpty else {
+                fileHandle.readabilityHandler = nil
+                return
+            }
+            guard let text = String(data: data, encoding: .utf8) else { return }
             let message = text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !message.isEmpty else { return }
 
             DispatchQueue.main.async {
                 guard let self else { return }
                 guard self.generation == generation else { return }
+                if !message.lowercased().hasPrefix("warning:") {
+                    self.lastErrorMessage = message
+                }
                 if case .connecting = self.status {
                     self.status = .failed(message)
                 }
