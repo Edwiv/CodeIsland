@@ -694,6 +694,21 @@ hooks:
         XCTAssertTrue(script.contains("def _normalize_traecli_hooks_list_indentation"))
     }
 
+    func testRemoteInstallerAutoTrustsOnlyInstalledCodeIslandCodexHooks() throws {
+        let host = RemoteHost(id: "host-1", name: "devbox", host: "example.com")
+
+        let script = RemoteInstaller.configureRemoteHooksScript(host: host)
+
+        XCTAssertTrue(script.contains("def auto_trust_codex_hooks("))
+        XCTAssertTrue(script.contains(#""method": "hooks/list""#))
+        XCTAssertTrue(script.contains(#""method": "config/batchWrite""#))
+        XCTAssertTrue(script.contains(#"hook.get("sourcePath") == str(hooks_path)"#))
+        XCTAssertTrue(script.contains(#"hook.get("command") == expected_command"#))
+        XCTAssertTrue(script.contains(#""trusted_hash": hook["currentHash"]"#))
+        XCTAssertTrue(script.contains(#""mergeStrategy": "upsert""#))
+        try assertPythonCompiles(script)
+    }
+
     func testRemoteInstallerConfigureScriptInstallsOpencodePlugin() {
         let host = RemoteHost(id: "host-1", name: "devbox", host: "example.com")
 

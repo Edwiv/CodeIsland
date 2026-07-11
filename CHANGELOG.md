@@ -1,5 +1,19 @@
 # Changelog
 
+## [v1.0.38] - 2026-07-11
+
+### English
+- Redesign the fleet dashboard for clearer local and remote agent monitoring
+- Harden remote SSH reconnection, socket cleanup, and forward health recovery
+- Shrink the collapsed Island's real window bounds so macOS screenshots no longer snap to an invisible expanded panel while keeping the Island capturable
+- Automatically trust only the exact CodeIsland-managed remote Codex hooks after install or update, using Codex's own current hook hashes
+
+### 中文
+- 重新设计全局设备仪表盘，更清晰地查看本地与远程 agent
+- 加固远程 SSH 重连、残留 socket 清理与反向通道健康恢复
+- 收起时同步缩小 Island 的真实窗口边界，避免 macOS 截图吸附到不可见的大窗口，同时保留 Island 本身可截图
+- 远程 Codex hook 安装或更新后，使用 Codex 自己计算的当前哈希，仅自动信任 CodeIsland 精确管理的 hook
+
 ## [v1.0.28] - 2026-06-15
 
 ### English

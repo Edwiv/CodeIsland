@@ -206,6 +206,10 @@ import pathlib
 import shutil
 import os
 import re
+import glob
+import select
+import subprocess
+import time
 
 home = pathlib.Path.home()
 hook_path = home / ".codeisland" / "codeisland-remote-hook.py"
@@ -829,6 +833,124 @@ def ensure_toml_codex_hooks(path):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\\n".join(lines).rstrip() + "\\n")
 
+def _codex_binary_candidates():
+    candidates = []
+    found = shutil.which("codex")
+    if found:
+        candidates.append(found)
+    patterns = [
+        str(home / ".nvm/versions/node/*/bin/codex"),
+        str(home / ".local/bin/codex"),
+        str(home / ".volta/bin/codex"),
+        str(home / ".vscode-server/extensions/openai.chatgpt-*/bin/linux-*/codex"),
+        str(home / ".vscode-server-insiders/extensions/openai.chatgpt-*/bin/linux-*/codex"),
+        str(home / ".cursor-server/extensions/openai.chatgpt-*/bin/linux-*/codex"),
+    ]
+    for pattern in patterns:
+        candidates.extend(glob.glob(pattern))
+    executable = [
+        path for path in dict.fromkeys(candidates)
+        if os.path.isfile(path) and os.access(path, os.X_OK)
+    ]
+    return sorted(executable, key=os.path.getmtime, reverse=True)
+
+def _send_codex_request(process, message):
+    process.stdin.write(json.dumps(message, separators=(",", ":")) + "\\n")
+    process.stdin.flush()
+
+def _receive_codex_response(process, request_id, timeout=8):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        ready, _, _ = select.select(
+            [process.stdout], [], [], max(0, deadline - time.monotonic())
+        )
+        if not ready:
+            break
+        line = process.stdout.readline()
+        if not line:
+            break
+        message = json.loads(line)
+        if message.get("id") == request_id:
+            return message
+    raise RuntimeError(f"Codex app-server timed out waiting for request {request_id}")
+
+def _auto_trust_codex_hooks_with_binary(codex, hooks_path, expected_command):
+    process = subprocess.Popen(
+        [codex, "app-server", "--stdio"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        bufsize=1,
+    )
+    try:
+        _send_codex_request(process, {
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "clientInfo": {"name": "codeisland", "version": version},
+                "capabilities": {"experimentalApi": True},
+            },
+        })
+        initialized = _receive_codex_response(process, 1)
+        if "error" in initialized:
+            raise RuntimeError(str(initialized["error"]))
+        _send_codex_request(process, {"method": "initialized", "params": {}})
+        _send_codex_request(process, {
+            "id": 2,
+            "method": "hooks/list",
+            "params": {"cwds": [str(home)]},
+        })
+        listed = _receive_codex_response(process, 2)
+        entries = listed.get("result", {}).get("data", [])
+        hooks = entries[0].get("hooks", []) if entries else []
+        state = {
+            hook["key"]: {"trusted_hash": hook["currentHash"]}
+            for hook in hooks
+            if hook.get("sourcePath") == str(hooks_path)
+            and hook.get("command") == expected_command
+            and hook.get("isManaged") is False
+            and isinstance(hook.get("currentHash"), str)
+        }
+        if not state:
+            raise RuntimeError("CodeIsland Codex hooks were not discovered")
+        _send_codex_request(process, {
+            "id": 3,
+            "method": "config/batchWrite",
+            "params": {
+                "edits": [{
+                    "keyPath": "hooks.state",
+                    "value": state,
+                    "mergeStrategy": "upsert",
+                }],
+                "reloadUserConfig": True,
+            },
+        })
+        written = _receive_codex_response(process, 3)
+        if "error" in written:
+            raise RuntimeError(str(written["error"]))
+        return len(state)
+    finally:
+        try:
+            process.stdin.close()
+        except Exception:
+            pass
+        process.terminate()
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            process.kill()
+
+def auto_trust_codex_hooks(hooks_path, expected_command):
+    # Trust only the exact CodeIsland command we just installed. Other user or
+    # project hooks keep Codex's normal manual-review boundary.
+    for codex in _codex_binary_candidates():
+        try:
+            return _auto_trust_codex_hooks_with_binary(codex, hooks_path, expected_command)
+        except Exception:
+            continue
+    return 0
+
 def install_codex():
     codex_root = _codex_home()
     if not codex_root.exists() and shutil.which("codex") is None:
@@ -847,7 +969,8 @@ def install_codex():
     data["hooks"] = hooks
     write_json(hooks_path, data)
     ensure_toml_codex_hooks(codex_root / "config.toml")
-    return "Codex ok"
+    trusted = auto_trust_codex_hooks(hooks_path, cmd)
+    return f"Codex ok ({trusted} hooks trusted)" if trusted else "Codex ok"
 
 def install_codebuddy():
     codebuddy_root = home / ".codebuddy"

@@ -115,6 +115,15 @@ class PanelWindowController: NSObject, NSWindowDelegate {
         )
     }
 
+    nonisolated static func collapsedPanelSize(contentSize: NSSize, maximumSize: NSSize) -> NSSize {
+        // Leave enough transparent room for the status glow without retaining
+        // the full expanded panel as the window's capture/hit-test rectangle.
+        NSSize(
+            width: min(maximumSize.width, ceil(contentSize.width + 48)),
+            height: min(maximumSize.height, ceil(contentSize.height + 24))
+        )
+    }
+
     private var panel: NSPanel?
     private var hostingView: NotchHostingView<NotchPanelView>?
     private let appState: AppState
@@ -158,6 +167,7 @@ class PanelWindowController: NSObject, NSWindowDelegate {
     private var lastDisplayChoice = ""
     private var lastNotchHeightMode = SettingsDefaults.notchHeightMode
     private var lastCustomNotchHeight = SettingsDefaults.customNotchHeight
+    private var collapsedContentSize: NSSize?
 
     init(appState: AppState) {
         self.appState = appState
@@ -301,7 +311,10 @@ class PanelWindowController: NSObject, NSWindowDelegate {
             hasNotch: hasNotch,
             notchHeight: notchHeight,
             notchW: notchW,
-            screenWidth: screen.frame.width
+            screenWidth: screen.frame.width,
+            onPanelContentSizeChange: { [weak self] size in
+                self?.panelContentSizeDidChange(size)
+            }
         )
         let contentView = NotchHostingView(rootView: rootView)
         contentView.sizingOptions = []
@@ -457,8 +470,23 @@ class PanelWindowController: NSObject, NSWindowDelegate {
         panel.setFrame(panelFrame(for: screen), display: true)
     }
 
+    private func panelContentSizeDidChange(_ size: NSSize) {
+        guard size.width > 0, size.height > 0 else { return }
+        collapsedContentSize = size
+        guard !appState.surface.isExpanded else { return }
+        updatePosition()
+    }
+
     private func panelFrame(for screen: NSScreen) -> NSRect {
-        let size = panelSize(for: screen)
+        let maximumSize = panelSize(for: screen)
+        let size: NSSize
+        if appState.surface.isExpanded {
+            size = maximumSize
+        } else if let collapsedContentSize {
+            size = Self.collapsedPanelSize(contentSize: collapsedContentSize, maximumSize: maximumSize)
+        } else {
+            size = maximumSize
+        }
         let screenFrame = screen.frame
         let centeredX = centeredX(for: size, screen: screen)
         let dragOffset = SettingsManager.shared.allowHorizontalDrag
@@ -557,6 +585,7 @@ class PanelWindowController: NSObject, NSWindowDelegate {
     /// Update panel visibility based on settings
     private func updateVisibility() {
         guard let panel = panel else { return }
+        updatePosition()
         let settings = SettingsManager.shared
         if settings.hideInFullscreen && fullscreenLatch {
             panel.orderOut(nil)

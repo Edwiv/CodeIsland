@@ -3,6 +3,25 @@ import XCTest
 @testable import CodeIsland
 
 final class PanelWindowControllerTests: XCTestCase {
+    func testCollapsedPanelUsesCompactContentSizeWithGlowAllowance() {
+        let size = PanelWindowController.collapsedPanelSize(
+            contentSize: NSSize(width: 310.2, height: 37.1),
+            maximumSize: NSSize(width: 620, height: 600)
+        )
+
+        XCTAssertEqual(size.width, 359)
+        XCTAssertEqual(size.height, 62)
+    }
+
+    func testCollapsedPanelSizeNeverExceedsExpandedPanel() {
+        let size = PanelWindowController.collapsedPanelSize(
+            contentSize: NSSize(width: 700, height: 800),
+            maximumSize: NSSize(width: 620, height: 600)
+        )
+
+        XCTAssertEqual(size, NSSize(width: 620, height: 600))
+    }
+
     func testScreenHopMotionUsesMoreVisibleTiming() {
         let motion = PanelWindowController.screenHopMotion()
 

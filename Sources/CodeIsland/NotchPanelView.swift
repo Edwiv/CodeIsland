@@ -38,6 +38,7 @@ struct NotchPanelView: View {
     let notchHeight: CGFloat
     let notchW: CGFloat
     let screenWidth: CGFloat
+    var onPanelContentSizeChange: (CGSize) -> Void = { _ in }
 
     @AppStorage(SettingsKey.contentFontSize) private var contentFontSize = SettingsDefaults.contentFontSize
     @AppStorage(SettingsKey.showAgentDetails) private var showAgentDetails = SettingsDefaults.showAgentDetails
@@ -246,6 +247,15 @@ struct NotchPanelView: View {
                     runningIntensity: Double(glowRunningIntensityPct) / 100.0
                 )
             )
+            .background {
+                GeometryReader { proxy in
+                    Color.clear
+                        .onAppear { onPanelContentSizeChange(proxy.size) }
+                        .onChange(of: proxy.size) { _, size in
+                            onPanelContentSizeChange(size)
+                        }
+                }
+            }
             .offset(y: curtainOffset)
             .opacity(curtainOpacity)
             .onChange(of: showToolStatus) { _, newValue in
