@@ -106,7 +106,17 @@ final class AppState {
     var pendingQuestion: QuestionRequest? { questionQueue.first }
     /// Preview-only: mock question payload for DebugHarness (no continuation needed)
     var previewQuestionPayload: QuestionPayload?
-    var surface: IslandSurface = .collapsed
+    /// AppKit uses this narrow pre-change hook to resize the transparent panel
+    /// envelope before SwiftUI starts animating the new surface. Keeping it out of
+    /// Observation prevents the callback itself from invalidating the view tree.
+    @ObservationIgnored
+    var surfaceWillChange: ((IslandSurface, IslandSurface) -> Void)?
+    var surface: IslandSurface = .collapsed {
+        willSet {
+            guard newValue != surface else { return }
+            surfaceWillChange?(surface, newValue)
+        }
+    }
     /// Bumped each time a session completes (drives the one-shot green "done" glow flash, R6).
     private(set) var doneFlashNonce: Int = 0
 

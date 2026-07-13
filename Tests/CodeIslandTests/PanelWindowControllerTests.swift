@@ -2,6 +2,7 @@ import AppKit
 import XCTest
 @testable import CodeIsland
 
+@MainActor
 final class PanelWindowControllerTests: XCTestCase {
     func testCollapsedPanelUsesCompactContentSizeWithGlowAllowance() {
         let size = PanelWindowController.collapsedPanelSize(
@@ -20,6 +21,45 @@ final class PanelWindowControllerTests: XCTestCase {
         )
 
         XCTAssertEqual(size, NSSize(width: 620, height: 600))
+    }
+
+    func testExpandedEnvelopeKeepsMaximumWindowDuringContentAnimation() {
+        let size = PanelWindowController.panelFrameSize(
+            usesExpandedEnvelope: true,
+            collapsedContentSize: NSSize(width: 310, height: 38),
+            maximumSize: NSSize(width: 620, height: 600)
+        )
+
+        XCTAssertEqual(size, NSSize(width: 620, height: 600))
+    }
+
+    func testCollapsedEnvelopeUsesCompactWindowAfterAnimationSettles() {
+        let size = PanelWindowController.panelFrameSize(
+            usesExpandedEnvelope: false,
+            collapsedContentSize: NSSize(width: 310, height: 38),
+            maximumSize: NSSize(width: 620, height: 600)
+        )
+
+        XCTAssertEqual(size, NSSize(width: 358, height: 62))
+    }
+
+    func testSurfaceWillChangeRunsBeforeObservedSurfaceMutation() {
+        let appState = AppState()
+        var observedOldSurface: IslandSurface?
+        var observedCurrentSurface: IslandSurface?
+        var observedNewSurface: IslandSurface?
+        appState.surfaceWillChange = { oldSurface, newSurface in
+            observedOldSurface = oldSurface
+            observedCurrentSurface = appState.surface
+            observedNewSurface = newSurface
+        }
+
+        appState.surface = .sessionList
+
+        XCTAssertEqual(observedOldSurface, .collapsed)
+        XCTAssertEqual(observedCurrentSurface, .collapsed)
+        XCTAssertEqual(observedNewSurface, .sessionList)
+        XCTAssertEqual(appState.surface, .sessionList)
     }
 
     func testScreenHopMotionUsesMoreVisibleTiming() {

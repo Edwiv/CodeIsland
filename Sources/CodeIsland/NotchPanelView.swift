@@ -38,7 +38,7 @@ struct NotchPanelView: View {
     let notchHeight: CGFloat
     let notchW: CGFloat
     let screenWidth: CGFloat
-    var onPanelContentSizeChange: (CGSize) -> Void = { _ in }
+    var onCollapsedContentSizeChange: (CGSize) -> Void = { _ in }
 
     @AppStorage(SettingsKey.contentFontSize) private var contentFontSize = SettingsDefaults.contentFontSize
     @AppStorage(SettingsKey.showAgentDetails) private var showAgentDetails = SettingsDefaults.showAgentDetails
@@ -247,15 +247,6 @@ struct NotchPanelView: View {
                     runningIntensity: Double(glowRunningIntensityPct) / 100.0
                 )
             )
-            .background {
-                GeometryReader { proxy in
-                    Color.clear
-                        .onAppear { onPanelContentSizeChange(proxy.size) }
-                        .onChange(of: proxy.size) { _, size in
-                            onPanelContentSizeChange(size)
-                        }
-                }
-            }
             .offset(y: curtainOffset)
             .opacity(curtainOpacity)
             .onChange(of: showToolStatus) { _, newValue in
@@ -276,7 +267,13 @@ struct NotchPanelView: View {
                     }
                 }
             }
-            .onAppear { displayedToolStatus = showToolStatus }
+            .onAppear {
+                displayedToolStatus = showToolStatus
+                reportCollapsedContentSize(width: panelWidth)
+            }
+            .onChange(of: panelWidth) { _, width in
+                reportCollapsedContentSize(width: width)
+            }
             .contentShape(Rectangle())
             .onHover { hovering in
                 // Idle indicator hover — delay un-hover to prevent oscillation when
@@ -377,6 +374,14 @@ struct NotchPanelView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .animation(NotchAnimation.open, value: appState.surface)
+    }
+
+    private func reportCollapsedContentSize(width: CGFloat) {
+        guard !shouldShowExpanded else { return }
+        // Report the logical compact target once per state change. Measuring the
+        // animated geometry here feeds every spring frame back into NSPanel sizing,
+        // which creates a layout/resize loop and makes the island drift sideways.
+        onCollapsedContentSizeChange(CGSize(width: width, height: notchHeight))
     }
 }
 

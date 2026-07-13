@@ -124,6 +124,15 @@ class PanelWindowController: NSObject, NSWindowDelegate {
         )
     }
 
+    nonisolated static func panelFrameSize(
+        usesExpandedEnvelope: Bool,
+        collapsedContentSize: NSSize?,
+        maximumSize: NSSize
+    ) -> NSSize {
+        guard !usesExpandedEnvelope, let collapsedContentSize else { return maximumSize }
+        return collapsedPanelSize(contentSize: collapsedContentSize, maximumSize: maximumSize)
+    }
+
     private var panel: NSPanel?
     private var hostingView: NotchHostingView<NotchPanelView>?
     private let appState: AppState
@@ -154,7 +163,6 @@ class PanelWindowController: NSObject, NSWindowDelegate {
     private var visibilityTimer: Timer?
     private var autoScreenPoller: Timer?
     private var fullscreenPoller: Timer?
-    private var sessionObservationTask: Task<Void, Never>?
     private var fullscreenLatch = false
     private var settingsObservers: [NSObjectProtocol] = []
     private var globalClickMonitor: Any?
@@ -168,6 +176,11 @@ class PanelWindowController: NSObject, NSWindowDelegate {
     private var lastNotchHeightMode = SettingsDefaults.notchHeightMode
     private var lastCustomNotchHeight = SettingsDefaults.customNotchHeight
     private var collapsedContentSize: NSSize?
+    private var usesExpandedPanelEnvelope = false
+    private var lastObservedExpansionState = false
+    private var collapseResizeTask: Task<Void, Never>?
+
+    private static let collapseResizeDelay: Duration = .milliseconds(500)
 
     init(appState: AppState) {
         self.appState = appState
@@ -202,6 +215,11 @@ class PanelWindowController: NSObject, NSWindowDelegate {
 
         self.panel = panel
         self.lastChosenScreenSignature = ScreenDetector.signature(for: screen)
+        self.usesExpandedPanelEnvelope = appState.surface.isExpanded
+        self.lastObservedExpansionState = appState.surface.isExpanded
+        appState.surfaceWillChange = { [weak self] oldSurface, newSurface in
+            self?.surfaceWillChange(from: oldSurface, to: newSurface)
+        }
 
         setupHorizontalDragMonitor()
         updatePosition()
@@ -262,18 +280,10 @@ class PanelWindowController: NSObject, NSWindowDelegate {
             }
         }
 
-        // Observe session changes via @Observable tracking
-        sessionObservationTask = Task { @MainActor [weak self] in
-            while !Task.isCancelled {
-                withObservationTracking {
-                    _ = self?.appState.sessions
-                    _ = self?.appState.surface
-                } onChange: {
-                    Task { @MainActor in self?.updateVisibility() }
-                }
-                try? await Task.sleep(for: .milliseconds(500))
-            }
-        }
+        // Observation tracking is one-shot: re-arm only after a tracked value
+        // changes. A polling loop would stack dormant observers every 500 ms and
+        // later fan one mutation out into hundreds of redundant window updates.
+        observeAppStateChanges()
 
         // Observe settings changes (display choice, panel height)
         observeSettingsChanges()
@@ -312,8 +322,8 @@ class PanelWindowController: NSObject, NSWindowDelegate {
             notchHeight: notchHeight,
             notchW: notchW,
             screenWidth: screen.frame.width,
-            onPanelContentSizeChange: { [weak self] size in
-                self?.panelContentSizeDidChange(size)
+            onCollapsedContentSizeChange: { [weak self] size in
+                self?.collapsedContentSizeDidChange(size)
             }
         )
         let contentView = NotchHostingView(rootView: rootView)
@@ -467,26 +477,93 @@ class PanelWindowController: NSObject, NSWindowDelegate {
     private func updatePosition() {
         guard let panel = panel else { return }
         let screen = chosenScreen()
-        panel.setFrame(panelFrame(for: screen), display: true)
+        let frame = panelFrame(for: screen)
+        guard !panel.frame.equalTo(frame) else { return }
+        panel.setFrame(frame, display: true, animate: false)
     }
 
-    private func panelContentSizeDidChange(_ size: NSSize) {
+    private func collapsedContentSizeDidChange(_ size: NSSize) {
         guard size.width > 0, size.height > 0 else { return }
+        guard collapsedContentSize != size else { return }
         collapsedContentSize = size
-        guard !appState.surface.isExpanded else { return }
+        guard !usesExpandedPanelEnvelope, !appState.surface.isExpanded else { return }
         updatePosition()
+    }
+
+    private func observeAppStateChanges() {
+        withObservationTracking {
+            _ = appState.activeSessionCount
+            _ = appState.surface
+        } onChange: { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                let isExpanded = self.appState.surface.isExpanded
+                let expansionChanged = isExpanded != self.lastObservedExpansionState
+                self.lastObservedExpansionState = isExpanded
+
+                // Re-arm before performing side effects so there is never a growing
+                // collection of observers and the next mutation cannot be missed.
+                self.observeAppStateChanges()
+                if expansionChanged {
+                    self.handleExpansionChange(isExpanded: isExpanded)
+                }
+                self.updateVisibility()
+            }
+        }
+    }
+
+    private func surfaceWillChange(from oldSurface: IslandSurface, to newSurface: IslandSurface) {
+        let wasExpanded = oldSurface.isExpanded
+        let willBeExpanded = newSurface.isExpanded
+        guard wasExpanded != willBeExpanded else { return }
+
+        // This callback runs before SwiftUI observes the new value, so the panel
+        // reaches its stable envelope before the spring transaction lays out its
+        // first frame. The one-shot observation callback remains as a fallback.
+        lastObservedExpansionState = willBeExpanded
+        handleExpansionChange(isExpanded: willBeExpanded)
+    }
+
+    private func handleExpansionChange(isExpanded: Bool) {
+        collapseResizeTask?.cancel()
+        collapseResizeTask = nil
+
+        if isExpanded {
+            // Give SwiftUI a stable, centered maximum-size canvas before its spring
+            // renders. The visible compact content remains centered while it grows.
+            usesExpandedPanelEnvelope = true
+            updatePosition()
+            return
+        }
+
+        guard usesExpandedPanelEnvelope else {
+            updatePosition()
+            return
+        }
+
+        // Keep the maximum-size transparent canvas until the close spring settles,
+        // then shrink the actual window once. This preserves screenshot selection
+        // behavior without feeding animated geometry back into NSPanel.setFrame.
+        collapseResizeTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: Self.collapseResizeDelay)
+            } catch {
+                return
+            }
+            guard let self, !self.appState.surface.isExpanded else { return }
+            self.usesExpandedPanelEnvelope = false
+            self.updatePosition()
+            self.collapseResizeTask = nil
+        }
     }
 
     private func panelFrame(for screen: NSScreen) -> NSRect {
         let maximumSize = panelSize(for: screen)
-        let size: NSSize
-        if appState.surface.isExpanded {
-            size = maximumSize
-        } else if let collapsedContentSize {
-            size = Self.collapsedPanelSize(contentSize: collapsedContentSize, maximumSize: maximumSize)
-        } else {
-            size = maximumSize
-        }
+        let size = Self.panelFrameSize(
+            usesExpandedEnvelope: usesExpandedPanelEnvelope,
+            collapsedContentSize: collapsedContentSize,
+            maximumSize: maximumSize
+        )
         let screenFrame = screen.frame
         let centeredX = centeredX(for: size, screen: screen)
         let dragOffset = SettingsManager.shared.allowHorizontalDrag
@@ -645,6 +722,7 @@ class PanelWindowController: NSObject, NSWindowDelegate {
     }
 
     deinit {
+        collapseResizeTask?.cancel()
         autoScreenPoller?.invalidate()
         fullscreenPoller?.invalidate()
         for observer in settingsObservers {
