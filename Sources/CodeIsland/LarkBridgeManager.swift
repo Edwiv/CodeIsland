@@ -33,9 +33,13 @@ private let larkLogStamp: DateFormatter = {
 final class LarkBridgeManager: @unchecked Sendable {
     private let log = Logger(subsystem: "com.codeisland", category: "lark-bridge")
     private let queue = DispatchQueue(label: "com.codeisland.lark-bridge")
+    private let interpreterOverride: (executable: String, arguments: [String])?
 
     private var process: Process?
     private var stdinHandle: FileHandle?
+    private var stdinPipe: Pipe?
+    private var stdoutPipe: Pipe?
+    private var stderrPipe: Pipe?
     private var stdoutBuffer = Data()
 
     /// Delivered on the main queue.
@@ -44,6 +48,10 @@ final class LarkBridgeManager: @unchecked Sendable {
     var onExit: ((Int32) -> Void)?
 
     var isRunning: Bool { queue.sync { process?.isRunning ?? false } }
+
+    init(interpreterOverride: (executable: String, arguments: [String])? = nil) {
+        self.interpreterOverride = interpreterOverride
+    }
 
     // MARK: - Lifecycle
 
@@ -73,7 +81,7 @@ final class LarkBridgeManager: @unchecked Sendable {
         _stop()
         stdoutBuffer.removeAll(keepingCapacity: true)
 
-        let (exe, baseArgs) = Self.resolvePython()
+        let (exe, baseArgs) = interpreterOverride ?? Self.resolvePython()
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: exe)
         proc.arguments = baseArgs + [scriptPath]
@@ -92,32 +100,59 @@ final class LarkBridgeManager: @unchecked Sendable {
 
         outPipe.fileHandleForReading.readabilityHandler = { [weak self] fh in
             let data = fh.availableData
-            guard !data.isEmpty else { return }
+            guard !data.isEmpty else {
+                fh.readabilityHandler = nil
+                try? fh.close()
+                return
+            }
             self?.queue.async { self?.ingest(data) }
         }
         errPipe.fileHandleForReading.readabilityHandler = { [weak self] fh in
             let data = fh.availableData
-            guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else { return }
+            guard !data.isEmpty else {
+                fh.readabilityHandler = nil
+                try? fh.close()
+                return
+            }
+            guard let text = String(data: data, encoding: .utf8) else { return }
             self?.log.info("sidecar stderr: \(text.trimmingCharacters(in: .whitespacesAndNewlines), privacy: .public)")
         }
 
         proc.terminationHandler = { [weak self] p in
             let code = p.terminationStatus
             larkDebugLog("bridge: sidecar exited code=\(code)")
-            self?.queue.async {
-                self?.stdinHandle = nil
-                self?.process = nil
+            self?.queue.async { [weak self] in
+                guard let self, self.process === p else { return }
+                let stdin = self.stdinPipe
+                let stdout = self.stdoutPipe
+                let stderr = self.stderrPipe
+                self.stdinHandle = nil
+                self.stdinPipe = nil
+                self.stdoutPipe = nil
+                self.stderrPipe = nil
+                self.process = nil
+                Self.closePipes(stdin: stdin, stdout: stdout, stderr: stderr)
+                DispatchQueue.main.async { [weak self] in self?.onExit?(code) }
             }
-            DispatchQueue.main.async { self?.onExit?(code) }
         }
 
         do {
             try proc.run()
+            // Close descriptors used only by the child process. This makes EOF delivery and
+            // repeated sidecar restarts deterministic.
+            try? inPipe.fileHandleForReading.close()
+            try? outPipe.fileHandleForWriting.close()
+            try? errPipe.fileHandleForWriting.close()
             self.process = proc
             self.stdinHandle = inPipe.fileHandleForWriting
+            self.stdinPipe = inPipe
+            self.stdoutPipe = outPipe
+            self.stderrPipe = errPipe
             log.info("sidecar started: \(exe, privacy: .public) \(scriptPath, privacy: .public)")
             larkDebugLog("bridge: spawned \(exe) \(scriptPath)")
         } catch {
+            proc.terminationHandler = nil
+            Self.closePipes(stdin: inPipe, stdout: outPipe, stderr: errPipe)
             log.error("sidecar launch failed: \(error.localizedDescription, privacy: .public)")
             larkDebugLog("bridge: launch FAILED \(error.localizedDescription)")
             DispatchQueue.main.async { [weak self] in self?.onExit?(-1) }
@@ -125,12 +160,18 @@ final class LarkBridgeManager: @unchecked Sendable {
     }
 
     private func _stop() {
-        if let proc = process, proc.isRunning {
-            proc.terminationHandler = nil
-            proc.terminate()
-        }
+        let proc = process
+        let stdin = stdinPipe
+        let stdout = stdoutPipe
+        let stderr = stderrPipe
+        proc?.terminationHandler = nil
         stdinHandle = nil
+        stdinPipe = nil
+        stdoutPipe = nil
+        stderrPipe = nil
         process = nil
+        Self.closePipes(stdin: stdin, stdout: stdout, stderr: stderr)
+        if let proc, proc.isRunning { ProcessRunner.terminate(proc) }
     }
 
     /// Accumulate stdout and emit one event per newline-delimited JSON object.
@@ -164,13 +205,19 @@ final class LarkBridgeManager: @unchecked Sendable {
 
     /// Quick synchronous check: does `python -c "import lark_oapi"` succeed?
     private static func probeHasLark(_ python: String) -> Bool {
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: python)
-        p.arguments = ["-c", "import lark_oapi"]
-        p.standardOutput = FileHandle.nullDevice
-        p.standardError = FileHandle.nullDevice
-        do { try p.run() } catch { return false }
-        p.waitUntilExit()
-        return p.terminationStatus == 0
+        ProcessRunner.runSilently(
+            path: python,
+            args: ["-c", "import lark_oapi"],
+            timeout: 5
+        )
+    }
+
+    private static func closePipes(stdin: Pipe?, stdout: Pipe?, stderr: Pipe?) {
+        stdout?.fileHandleForReading.readabilityHandler = nil
+        stderr?.fileHandleForReading.readabilityHandler = nil
+        for pipe in [stdin, stdout, stderr].compactMap({ $0 }) {
+            try? pipe.fileHandleForReading.close()
+            try? pipe.fileHandleForWriting.close()
+        }
     }
 }

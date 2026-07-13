@@ -20,6 +20,7 @@ final class SSHForwarder {
 
     private var process: Process?
     private var stderrPipe: Pipe?
+    private var cleanupTask: Task<Void, Never>?
     private var generation: UInt64 = 0
     private var lastErrorMessage: String?
 
@@ -47,21 +48,32 @@ final class SSHForwarder {
         // -R bind never races the leftover socket.
         let cleanupArguments = Self.cleanupArguments(host: host, remoteSocketPath: remoteSocketPath)
         let cleanupEnvironment = Self.environment(host: host)
-        DispatchQueue.global(qos: .userInitiated).async {
-            Self.runCleanup(arguments: cleanupArguments, environment: cleanupEnvironment)
-            DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-                // A newer connect()/disconnect() may have superseded this attempt
-                // while the cleanup SSH was in flight — bail if so.
-                guard self.generation == currentGeneration else { return }
-                guard case .connecting = self.status else { return }
-                self.startTunnel(
-                    host: host,
-                    localSocketPath: localSocketPath,
-                    remoteSocketPath: remoteSocketPath,
-                    generation: currentGeneration
-                )
+        cleanupTask = Task { [weak self] in
+            await SSHCommandGate.shared.acquire()
+            if Task.isCancelled {
+                await SSHCommandGate.shared.release()
+                return
             }
+            _ = await ProcessRunner.runAsync(
+                path: "/usr/bin/ssh",
+                args: cleanupArguments,
+                env: cleanupEnvironment,
+                timeout: 12
+            )
+            await SSHCommandGate.shared.release()
+
+            guard !Task.isCancelled, let self else { return }
+            // A newer connect()/disconnect() may have superseded this attempt while the
+            // cleanup SSH was queued or in flight — bail if so.
+            guard self.generation == currentGeneration else { return }
+            guard case .connecting = self.status else { return }
+            self.cleanupTask = nil
+            self.startTunnel(
+                host: host,
+                localSocketPath: localSocketPath,
+                remoteSocketPath: remoteSocketPath,
+                generation: currentGeneration
+            )
         }
     }
 
@@ -80,14 +92,11 @@ final class SSHForwarder {
         stderrPipe = stderr
 
         process.terminationHandler = { [weak self] proc in
+            Self.closePipe(stderr)
             DispatchQueue.main.async {
                 guard let self else { return }
                 guard self.generation == currentGeneration else { return }
-                // Release the stderr pipe/handler the moment the child exits. If we leave the
-                // readabilityHandler registered, the closed FD keeps getting poked and the
-                // handler is invoked in a tight loop, pinning CPU at 100% when ssh disconnects.
-                self.stderrPipe?.fileHandleForReading.readabilityHandler = nil
-                self.stderrPipe = nil
+                if self.stderrPipe === stderr { self.stderrPipe = nil }
                 self.process = nil
                 if case .disconnected = self.status { return }
                 let code = proc.terminationStatus
@@ -97,6 +106,9 @@ final class SSHForwarder {
 
         do {
             try process.run()
+            // The child owns a duplicated write descriptor after launch. Closing the parent
+            // copy ensures the read handler observes EOF when ssh exits.
+            try? stderr.fileHandleForWriting.close()
             self.process = process
             startStderrMonitor(stderr, generation: currentGeneration)
 
@@ -112,19 +124,22 @@ final class SSHForwarder {
             }
         } catch {
             self.process = nil
+            Self.closePipe(stderr)
             self.stderrPipe = nil
             status = .failed("ssh launch failed")
         }
     }
 
     func disconnect() {
-        stderrPipe?.fileHandleForReading.readabilityHandler = nil
+        cleanupTask?.cancel()
+        cleanupTask = nil
+        if let stderrPipe { Self.closePipe(stderrPipe) }
         stderrPipe = nil
 
         if let process {
             status = .disconnected
             if process.isRunning {
-                process.terminate()
+                ProcessRunner.terminate(process)
             }
         } else {
             status = .disconnected
@@ -141,22 +156,6 @@ final class SSHForwarder {
     /// "remote port forwarding failed for listen path …".  A quick `rm -f`
     /// over SSH sidesteps the issue.  See issue #206.
     ///
-    /// `nonisolated` so it can run on a background queue: it touches no actor
-    /// state — only the value-type `arguments`/`environment` handed in — and
-    /// blocks on `waitUntilExit()`, which must never run on the main thread.
-    nonisolated private static func runCleanup(arguments: [String], environment: [String: String]) {
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-        proc.arguments = arguments
-        proc.standardInput = FileHandle.nullDevice
-        proc.standardOutput = FileHandle.nullDevice
-        proc.standardError = FileHandle.nullDevice
-        proc.environment = environment
-
-        try? proc.run()
-        proc.waitUntilExit()
-    }
-
     /// One-time startup sweep: kill reverse-forward SSH tunnels orphaned (reparented to
     /// launchd) by a previous CodeIsland instance that exited without running `disconnect()`
     /// — e.g. a crash or force-quit. Without this they accumulate across restarts and hold
@@ -165,14 +164,11 @@ final class SSHForwarder {
     /// is necessarily an orphan. Matches only our `-R /tmp/codeisland…sock` reverse forwards,
     /// never the user's interactive ssh or a ControlMaster session.
     nonisolated static func killOrphanedTunnels() {
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
-        proc.arguments = ["-f", "ssh .*-R /tmp/codeisland.*\\.sock"]
-        proc.standardInput = FileHandle.nullDevice
-        proc.standardOutput = FileHandle.nullDevice
-        proc.standardError = FileHandle.nullDevice
-        try? proc.run()
-        proc.waitUntilExit()
+        ProcessRunner.runSilently(
+            path: "/usr/bin/pkill",
+            args: ["-f", "ssh .*-R /tmp/codeisland.*\\.sock"],
+            timeout: 5
+        )
     }
 
     /// Build SSH arguments that remove a stale remote socket file.
@@ -250,6 +246,7 @@ final class SSHForwarder {
             let data = fileHandle.availableData
             guard !data.isEmpty else {
                 fileHandle.readabilityHandler = nil
+                try? fileHandle.close()
                 return
             }
             guard let text = String(data: data, encoding: .utf8) else { return }
@@ -267,5 +264,11 @@ final class SSHForwarder {
                 }
             }
         }
+    }
+
+    nonisolated private static func closePipe(_ pipe: Pipe) {
+        pipe.fileHandleForReading.readabilityHandler = nil
+        try? pipe.fileHandleForReading.close()
+        try? pipe.fileHandleForWriting.close()
     }
 }

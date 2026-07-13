@@ -162,26 +162,22 @@ enum RemoteJumpService {
         return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
     }
 
-    /// Fire-and-forget launch off the main thread. `code`/`cursor` signal the running
-    /// instance and exit quickly, but we never wait so the menu-bar UI can't stall.
+    /// Launch off the main thread. `code`/`cursor` normally signal the running instance and
+    /// exit quickly; the bounded runner also reaps a wedged CLI without stalling the UI.
     private static func launch(_ path: String, _ args: [String]) {
         DispatchQueue.global(qos: .userInitiated).async {
-            let p = Process()
-            p.executableURL = URL(fileURLWithPath: path)
-            p.arguments = args
-            p.standardOutput = FileHandle.nullDevice
-            p.standardError = FileHandle.nullDevice
-            try? p.run()
+            ProcessRunner.runSilently(path: path, args: args, timeout: 15)
         }
     }
 
     private static func activateEditorApp(_ editor: String) {
         let appName = editor == "cursor" ? "Cursor" : "Visual Studio Code"
         DispatchQueue.global(qos: .userInitiated).async {
-            let p = Process()
-            p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-            p.arguments = ["-a", appName]
-            try? p.run()
+            ProcessRunner.runSilently(
+                path: "/usr/bin/open",
+                args: ["-a", appName],
+                timeout: 10
+            )
         }
     }
 }

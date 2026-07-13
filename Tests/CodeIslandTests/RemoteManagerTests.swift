@@ -23,6 +23,10 @@ final class RemoteManagerTests: XCTestCase {
         XCTAssertEqual(RemoteManager.reconnectDelay(attempt: -1), 1)
     }
 
+    func testHookInstallationRetriesTransientSSHFailures() {
+        XCTAssertEqual(RemoteManager.hookInstallRetryDelaysSeconds, [2, 5])
+    }
+
     func testForwardProbeScriptChecksTheReverseForwardAndResponse() {
         let script = RemoteInstaller.forwardProbeScript(remoteSocketPath: "/tmp/codeisland-1000.sock")
 
@@ -36,5 +40,53 @@ final class RemoteManagerTests: XCTestCase {
     func testHookServerHealthProbeProtocolMatchesRemoteProbe() {
         XCTAssertEqual(HookServer.healthProbeRequest, Data(#"{"_codeisland_health_probe":true}"#.utf8))
         XCTAssertEqual(HookServer.healthProbeResponse, Data(#"{"ok":true}"#.utf8))
+    }
+
+    func testRemoteCommandsAreBoundedAndRespectConfiguredControlMaster() {
+        let args = RemoteInstaller.sshArguments(host: RemoteHost(name: "test", host: "devbox"))
+
+        XCTAssertTrue(args.contains("BatchMode=yes"))
+        XCTAssertTrue(args.contains("ConnectTimeout=8"))
+        XCTAssertTrue(args.contains("ConnectionAttempts=1"))
+        XCTAssertTrue(args.contains("TCPKeepAlive=yes"))
+        XCTAssertTrue(args.contains("ServerAliveInterval=15"))
+        XCTAssertTrue(args.contains("ServerAliveCountMax=2"))
+        XCTAssertFalse(args.contains("ControlMaster=no"))
+        XCTAssertFalse(args.contains("ControlPath=none"))
+        XCTAssertEqual(args.last, "devbox")
+    }
+
+    func testSSHCommandGateSerializesConcurrentOperations() async {
+        let gate = SSHCommandGate(limit: 1)
+        let probe = SSHConcurrencyProbe()
+
+        await withTaskGroup(of: Void.self) { group in
+            for _ in 0..<8 {
+                group.addTask {
+                    await gate.acquire()
+                    await probe.enter()
+                    try? await Task.sleep(for: .milliseconds(10))
+                    await probe.leave()
+                    await gate.release()
+                }
+            }
+        }
+
+        let maximum = await probe.maximum
+        XCTAssertEqual(maximum, 1)
+    }
+}
+
+private actor SSHConcurrencyProbe {
+    private var active = 0
+    private(set) var maximum = 0
+
+    func enter() {
+        active += 1
+        maximum = max(maximum, active)
+    }
+
+    func leave() {
+        active -= 1
     }
 }

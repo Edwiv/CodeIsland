@@ -1,5 +1,19 @@
 # Changelog
 
+## [v1.0.39] - 2026-07-13
+
+### English
+- Fix remote SSH connections eventually failing after days of uptime because recurring health probes retained thousands of Pipe file descriptors
+- Make SSH probe and hook-install subprocesses cancellation-safe, timeout-bounded, fully reaped, serialized through shared jump hosts, and automatically retried after transient failures
+- Harden the long-running SSH tunnel, Codex app-server, and Lark sidecar lifecycles so every restart closes inherited Pipe endpoints and stale callbacks cannot affect a newer process
+- Bound other helper subprocesses and cancel superseded remote-connection preparation tasks to prevent similar long-running resource accumulation
+
+### 中文
+- 修复应用连续运行数天后远程 SSH 最终全部失联的问题：周期健康探测曾持续遗留 Pipe 文件描述符，最终耗尽进程上限
+- SSH 探测与 hook 安装子进程现在可取消、有硬超时、会在重连和网络切换时完整回收，并通过共享跳板机串行执行；瞬时失败会自动重试
+- 加固长期运行的 SSH 隧道、Codex app-server 与 Lark sidecar 生命周期；每次重启都会关闭继承的 Pipe 端点，旧进程回调也不会误伤新进程
+- 为其他辅助子进程补齐超时，并取消已被新连接取代的远程准备任务，避免同类资源在长期运行中累积
+
 ## [v1.0.38] - 2026-07-11
 
 ### English

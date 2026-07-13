@@ -1163,10 +1163,11 @@ struct TerminalActivator {
         }
         // Fallback: open -a (app not running yet)
         DispatchQueue.global(qos: .userInitiated).async {
-            let proc = Process()
-            proc.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-            proc.arguments = ["-a", name]
-            try? proc.run()
+            ProcessRunner.runSilently(
+                path: "/usr/bin/open",
+                args: ["-a", name],
+                timeout: 10
+            )
         }
     }
 
@@ -1201,12 +1202,11 @@ struct TerminalActivator {
     /// callers that are already on a background queue to avoid the double
     /// hop activateGhostty would otherwise pay (#139 review).
     private static func runOsaScriptSync(_ source: String) {
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        proc.arguments = ["-e", source]
-        proc.standardOutput = FileHandle.nullDevice
-        proc.standardError = FileHandle.nullDevice
-        try? proc.run()
+        ProcessRunner.runSilently(
+            path: "/usr/bin/osascript",
+            args: ["-e", source],
+            timeout: 15
+        )
     }
 
     /// Escape special characters for AppleScript string interpolation

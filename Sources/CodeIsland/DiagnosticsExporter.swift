@@ -42,6 +42,7 @@ struct DiagnosticsExporter {
         let tmp = fm.temporaryDirectory.appendingPathComponent("CodeIsland-Diag-\(UUID().uuidString)", isDirectory: true)
         let root = tmp.appendingPathComponent("CodeIsland-Diagnostics-\(timestamp())", isDirectory: true)
         try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: tmp) }
 
         // 1. Metadata
         writeJSON(metadata(), to: root.appendingPathComponent("metadata.json"))
@@ -96,16 +97,13 @@ struct DiagnosticsExporter {
         if fm.fileExists(atPath: destination.path) {
             try fm.removeItem(at: destination)
         }
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
-        proc.arguments = ["-c", "-k", "--keepParent", root.path, destination.path]
-        try proc.run()
-        proc.waitUntilExit()
-        try? fm.removeItem(at: tmp)
-
-        guard proc.terminationStatus == 0 else {
+        guard ProcessRunner.runSilently(
+            path: "/usr/bin/ditto",
+            args: ["-c", "-k", "--keepParent", root.path, destination.path],
+            timeout: 120
+        ) else {
             throw NSError(domain: "DiagnosticsExporter", code: 1, userInfo: [
-                NSLocalizedDescriptionKey: "ditto failed with exit code \(proc.terminationStatus)"
+                NSLocalizedDescriptionKey: "ditto failed or timed out"
             ])
         }
         return destination
@@ -332,20 +330,10 @@ struct DiagnosticsExporter {
     }
 
     private static func runCommand(_ executable: String, args: [String]) -> String {
-        let proc = Process()
-        let pipe = Pipe()
-        proc.executableURL = URL(fileURLWithPath: executable)
-        proc.arguments = args
-        proc.standardOutput = pipe
-        proc.standardError = FileHandle.nullDevice
-        do {
-            try proc.run()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            proc.waitUntilExit()
-            return String(data: data, encoding: .utf8) ?? ""
-        } catch {
-            return "error: \(error.localizedDescription)"
+        guard let data = ProcessRunner.run(path: executable, args: args, timeout: 30) else {
+            return "error: command failed or timed out"
         }
+        return String(data: data, encoding: .utf8) ?? ""
     }
 
     private static func copyCrashReports(to dir: URL) {

@@ -32,6 +32,7 @@ final class RemoteManager: ObservableObject {
     private var reconnectAttempts: [String: Int] = [:]
     private var desiredConnections: Set<String> = []
     private var connectionGenerations: [String: UInt64] = [:]
+    private var connectionPreparationTasks: [String: Task<Void, Never>] = [:]
     private var installTasks: [String: Task<Void, Never>] = [:]
     private var healthProbeTasks: [String: Task<Void, Never>] = [:]
     private var connectivityRecoveryTask: Task<Void, Never>?
@@ -50,6 +51,7 @@ final class RemoteManager: ObservableObject {
     private static let healthCheckIntervalSeconds = 60
     private static let healthProbeRetrySeconds = 3
     private static let wakeRecoveryDelaySeconds = 3
+    static let hookInstallRetryDelaysSeconds = [2, 5]
 
     /// Delay (seconds) before the nth reconnect attempt (1-based). Clamped to the
     /// last entry for attempts beyond the table.
@@ -242,7 +244,14 @@ final class RemoteManager: ObservableObject {
         connectionStatus[id] = .connecting
         lastMessage[id] = host.displayAddress
 
-        Task {
+        connectionPreparationTasks[id]?.cancel()
+        connectionPreparationTasks[id] = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                if self.connectionGenerations[id] == generation {
+                    self.connectionPreparationTasks[id] = nil
+                }
+            }
             let remoteSocketPath = await RemoteInstaller.prepareRemoteSocketPath(host: host)
             guard !Task.isCancelled,
                   self.connectionGenerations[id] == generation,
@@ -331,6 +340,11 @@ final class RemoteManager: ObservableObject {
         let generation = connectionGenerations[host.id] ?? 0
         installTasks[host.id] = Task { [weak self] in
             guard let self else { return }
+            defer {
+                if self.connectionGenerations[host.id] == generation {
+                    self.installTasks[host.id] = nil
+                }
+            }
             await self.installHooks(for: host, generation: generation)
         }
     }
@@ -338,7 +352,18 @@ final class RemoteManager: ObservableObject {
     private func installHooks(for host: RemoteHost, generation: UInt64) async {
         installRunning[host.id] = true
         let remoteSocketPath = remoteSocketPaths[host.id] ?? host.remoteSocketPath
-        let result = await RemoteInstaller.installAll(host: host, remoteSocketPath: remoteSocketPath)
+        var result = await RemoteInstaller.installAll(host: host, remoteSocketPath: remoteSocketPath)
+        for delay in Self.hookInstallRetryDelaysSeconds where !result.ok {
+            guard !Task.isCancelled,
+                  connectionGenerations[host.id] == generation,
+                  desiredConnections.contains(host.id) else { return }
+            Self.log.warning(
+                "Remote hook installation will retry for \(host.id, privacy: .public) in \(delay)s: \(result.message, privacy: .public)"
+            )
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled else { return }
+            result = await RemoteInstaller.installAll(host: host, remoteSocketPath: remoteSocketPath)
+        }
         guard !Task.isCancelled,
               connectionGenerations[host.id] == generation,
               desiredConnections.contains(host.id) else { return }
@@ -414,6 +439,8 @@ final class RemoteManager: ObservableObject {
         healthProbeTasks.removeAll()
         for task in installTasks.values { task.cancel() }
         installTasks.removeAll()
+        for task in connectionPreparationTasks.values { task.cancel() }
+        connectionPreparationTasks.removeAll()
     }
 
     private func scheduleConnectivityRecovery(reason: String) {
@@ -497,6 +524,8 @@ final class RemoteManager: ObservableObject {
 
     private func tearDownTunnel(id: String, notifyDisconnect: Bool) {
         _ = advanceConnectionGeneration(id: id)
+        connectionPreparationTasks[id]?.cancel()
+        connectionPreparationTasks[id] = nil
         healthProbeTasks[id]?.cancel()
         healthProbeTasks[id] = nil
         installTasks[id]?.cancel()

@@ -108,15 +108,19 @@ finally:
 
     /// Probe the remote user's UID and return a per-user socket path so that multiple
     /// OS users on a shared host don't collide on a single `/tmp/codeisland.sock` (#193).
-    /// Falls back to the legacy shared path when the probe fails (older / restricted host).
+    /// Falls back to the legacy shared path when repeated probes fail (older / restricted host).
     static func prepareRemoteSocketPath(host: RemoteHost) async -> String {
         // `id -u` is a bare external command, so it returns the remote uid identically
         // under any login shell (bash / zsh / fish / csh). A fancier `$(...)` pipeline
         // would break under non-POSIX login shells like fish and silently fall back.
-        let probe = await runSSH(host: host, command: "id -u", timeout: 8)
-        let uid = probe.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-        if probe.ok, !uid.isEmpty, uid.allSatisfy({ $0.isNumber }) {
-            return "/tmp/codeisland-\(uid).sock"
+        for attempt in 0..<2 {
+            let probe = await runSSH(host: host, command: "id -u", timeout: 15)
+            let uid = probe.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+            if probe.ok, !uid.isEmpty, uid.allSatisfy({ $0.isNumber }) {
+                return "/tmp/codeisland-\(uid).sock"
+            }
+            guard attempt == 0, !Task.isCancelled else { break }
+            try? await Task.sleep(for: .milliseconds(300))
         }
         // Probe failed (old / restricted host) — fall back to the legacy shared path.
         // StreamLocalBindUnlink=yes on the forward already clears any stale socket, so
@@ -1100,49 +1104,35 @@ print(" · ".join(parts))
         guard !host.sshTarget.isEmpty else {
             return RemoteCommandResult(stdout: "", stderr: "invalid host", exitCode: -1)
         }
-        return await withCheckedContinuation { continuation in
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-            process.arguments = sshArguments(host: host) + [command]
 
-            let stdout = Pipe()
-            let stderr = Pipe()
-            process.standardOutput = stdout
-            process.standardError = stderr
-            process.standardInput = FileHandle.nullDevice
-            process.environment = SSHForwarder.environment(host: host)
-
-            do {
-                try process.run()
-            } catch {
-                continuation.resume(returning: RemoteCommandResult(stdout: "", stderr: error.localizedDescription, exitCode: -1))
-                return
-            }
-
-            let timeoutTask = Task.detached {
-                let ns = UInt64(timeout * 1_000_000_000)
-                try? await Task.sleep(nanoseconds: ns)
-                if process.isRunning {
-                    process.terminate()
-                }
-            }
-
-            Task.detached {
-                process.waitUntilExit()
-                timeoutTask.cancel()
-                let outData = stdout.fileHandleForReading.readDataToEndOfFile()
-                let errData = stderr.fileHandleForReading.readDataToEndOfFile()
-                let out = String(data: outData, encoding: .utf8) ?? ""
-                let err = String(data: errData, encoding: .utf8) ?? ""
-                continuation.resume(returning: RemoteCommandResult(stdout: out, stderr: err, exitCode: process.terminationStatus))
-            }
+        await SSHCommandGate.shared.acquire()
+        if Task.isCancelled {
+            await SSHCommandGate.shared.release()
+            return RemoteCommandResult(stdout: "", stderr: "process cancelled", exitCode: -1)
         }
+        let result = await ProcessRunner.runAsync(
+            path: "/usr/bin/ssh",
+            args: sshArguments(host: host) + [command],
+            env: SSHForwarder.environment(host: host),
+            timeout: timeout
+        )
+        await SSHCommandGate.shared.release()
+
+        let stdout = String(data: result.stdout, encoding: .utf8) ?? ""
+        var stderr = String(data: result.stderr, encoding: .utf8) ?? ""
+        if let failure = result.failureDescription {
+            if !stderr.isEmpty, !stderr.hasSuffix("\n") { stderr.append("\n") }
+            stderr.append(failure)
+        }
+        return RemoteCommandResult(stdout: stdout, stderr: stderr, exitCode: result.exitCode)
     }
 
-    private static func sshArguments(host: RemoteHost) -> [String] {
+    static func sshArguments(host: RemoteHost) -> [String] {
         var args: [String] = [
             "-o", "BatchMode=yes",
             "-o", "ConnectTimeout=8",
+            "-o", "ConnectionAttempts=1",
+            "-o", "TCPKeepAlive=yes",
             "-o", "ServerAliveInterval=15",
             "-o", "ServerAliveCountMax=2",
         ]

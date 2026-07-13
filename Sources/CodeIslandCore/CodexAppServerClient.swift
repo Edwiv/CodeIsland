@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 /// A parsed JSON-RPC envelope received from the Codex app-server.
@@ -117,6 +118,9 @@ public final class CodexAppServerClient: @unchecked Sendable {
     private let lock = NSLock()
     private var process: Process?
     private var stdinHandle: FileHandle?
+    private var stdinPipe: Pipe?
+    private var stdoutPipe: Pipe?
+    private var stderrPipe: Pipe?
     private var readBuffer: Data = Data()
     private var nextRequestId: Int64 = 1
     private var isStopped: Bool = true
@@ -143,6 +147,10 @@ public final class CodexAppServerClient: @unchecked Sendable {
         return process?.isRunning == true
     }
 
+    deinit {
+        stop()
+    }
+
     // MARK: - Lifecycle
 
     public func start() throws {
@@ -151,6 +159,21 @@ public final class CodexAppServerClient: @unchecked Sendable {
             lock.unlock()
             return
         }
+        // A child may have exited just before its termination callback reached `ioQueue`.
+        // Detach that stale generation now so it cannot retain its pipe handlers or later tear
+        // down a newly-started client.
+        let staleProcess = process
+        let staleStdin = stdinPipe
+        let staleStdout = stdoutPipe
+        let staleStderr = stderrPipe
+        staleProcess?.terminationHandler = nil
+        process = nil
+        stdinHandle = nil
+        stdinPipe = nil
+        stdoutPipe = nil
+        stderrPipe = nil
+        Self.closePipes(stdin: staleStdin, stdout: staleStdout, stderr: staleStderr)
+
         guard FileManager.default.isExecutableFile(atPath: executableURL.path) else {
             lock.unlock()
             throw CodexAppServerError.executableMissing(executableURL.path)
@@ -169,30 +192,51 @@ public final class CodexAppServerClient: @unchecked Sendable {
 
         stdoutPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
-            if data.isEmpty { return }
+            if data.isEmpty {
+                handle.readabilityHandler = nil
+                try? handle.close()
+                return
+            }
             self?.ioQueue.async { self?.ingest(data: data) }
         }
         // Drain stderr to avoid filling the pipe buffer. We don't route it anywhere
         // by default; users who want the diagnostic stream can hook onto .onExit and
         // read the handle separately.
         stderrPipe.fileHandleForReading.readabilityHandler = { handle in
-            _ = handle.availableData
+            let data = handle.availableData
+            if data.isEmpty {
+                handle.readabilityHandler = nil
+                try? handle.close()
+            }
         }
 
         proc.terminationHandler = { [weak self] finished in
             let status = finished.terminationStatus
-            self?.ioQueue.async { self?.handleProcessExit(status: status) }
+            self?.ioQueue.async {
+                self?.handleProcessExit(process: finished, status: status)
+            }
         }
 
         do {
             try proc.run()
         } catch {
+            proc.terminationHandler = nil
+            Self.closePipes(stdin: stdinPipe, stdout: stdoutPipe, stderr: stderrPipe)
             lock.unlock()
             throw CodexAppServerError.processLaunchFailed("\(error)")
         }
 
+        // Close descriptors used only by the child. Without this, repeated app-server restarts
+        // keep parent-side pipe endpoints alive and EOF never becomes authoritative.
+        try? stdinPipe.fileHandleForReading.close()
+        try? stdoutPipe.fileHandleForWriting.close()
+        try? stderrPipe.fileHandleForWriting.close()
+
         self.process = proc
         self.stdinHandle = stdinPipe.fileHandleForWriting
+        self.stdinPipe = stdinPipe
+        self.stdoutPipe = stdoutPipe
+        self.stderrPipe = stderrPipe
         self.readBuffer.removeAll(keepingCapacity: true)
         self.isStopped = false
         lock.unlock()
@@ -202,14 +246,20 @@ public final class CodexAppServerClient: @unchecked Sendable {
         lock.lock()
         isStopped = true
         let proc = process
-        let stdin = stdinHandle
+        let stdin = stdinPipe
+        let stdout = stdoutPipe
+        let stderr = stderrPipe
+        proc?.terminationHandler = nil
         process = nil
         stdinHandle = nil
+        stdinPipe = nil
+        stdoutPipe = nil
+        stderrPipe = nil
         lock.unlock()
 
-        try? stdin?.close()
+        Self.closePipes(stdin: stdin, stdout: stdout, stderr: stderr)
         if let proc, proc.isRunning {
-            proc.terminate()
+            Self.terminate(proc)
         }
     }
 
@@ -296,18 +346,45 @@ public final class CodexAppServerClient: @unchecked Sendable {
         }
     }
 
-    private func handleProcessExit(status: Int32) {
+    private func handleProcessExit(process finished: Process, status: Int32) {
         lock.lock()
-        if isStopped {
+        guard process === finished, !isStopped else {
             lock.unlock()
             return
         }
         isStopped = true
+        let stdin = stdinPipe
+        let stdout = stdoutPipe
+        let stderr = stderrPipe
         process = nil
         stdinHandle = nil
+        stdinPipe = nil
+        stdoutPipe = nil
+        stderrPipe = nil
         let handler = onExit
         lock.unlock()
+        Self.closePipes(stdin: stdin, stdout: stdout, stderr: stderr)
         callbackQueue.async { handler?(status) }
+    }
+
+    private static func closePipes(stdin: Pipe?, stdout: Pipe?, stderr: Pipe?) {
+        stdout?.fileHandleForReading.readabilityHandler = nil
+        stderr?.fileHandleForReading.readabilityHandler = nil
+        for pipe in [stdin, stdout, stderr].compactMap({ $0 }) {
+            try? pipe.fileHandleForReading.close()
+            try? pipe.fileHandleForWriting.close()
+        }
+    }
+
+    private static func terminate(_ process: Process) {
+        guard process.isRunning else { return }
+        let pid = process.processIdentifier
+        process.terminate()
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 1) {
+            if process.isRunning {
+                Darwin.kill(pid, SIGKILL)
+            }
+        }
     }
 
     // MARK: - Pure parser (exposed for tests)

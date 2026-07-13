@@ -1,7 +1,50 @@
+import Darwin
 import XCTest
 @testable import CodeIslandCore
 
 final class CodexAppServerClientTests: XCTestCase {
+
+    func testNaturalProcessExitCleansUpClientLifecycle() throws {
+        let exited = expectation(description: "app-server process exited")
+        let client = CodexAppServerClient(
+            executableURL: URL(fileURLWithPath: "/usr/bin/true"),
+            arguments: [],
+            callbackQueue: .main
+        )
+        client.onExit = { status in
+            XCTAssertEqual(status, 0)
+            exited.fulfill()
+        }
+
+        try client.start()
+        wait(for: [exited], timeout: 2)
+        XCTAssertFalse(client.isRunning)
+    }
+
+    func testRepeatedStartStopKeepsFileDescriptorCountStable() throws {
+        for _ in 0..<5 {
+            let client = CodexAppServerClient(
+                executableURL: URL(fileURLWithPath: "/bin/cat"),
+                arguments: [],
+                callbackQueue: .main
+            )
+            try client.start()
+            client.stop()
+        }
+        let baseline = openFileDescriptorCount()
+
+        for _ in 0..<30 {
+            let client = CodexAppServerClient(
+                executableURL: URL(fileURLWithPath: "/bin/cat"),
+                arguments: [],
+                callbackQueue: .main
+            )
+            try client.start()
+            client.stop()
+        }
+
+        XCTAssertLessThanOrEqual(openFileDescriptorCount(), baseline + 2)
+    }
 
     // MARK: - drainMessages
 
@@ -152,5 +195,16 @@ final class CodexAppServerClientTests: XCTestCase {
             XCTFail("expected array for k3")
         }
         XCTAssertEqual(dict?["k4"]?.asObject?["inner"]?.asBool, true)
+    }
+
+    private func openFileDescriptorCount() -> Int {
+        var count = 0
+        for descriptor in 0..<getdtablesize() {
+            errno = 0
+            if fcntl(descriptor, F_GETFD) != -1 || errno != EBADF {
+                count += 1
+            }
+        }
+        return count
     }
 }
